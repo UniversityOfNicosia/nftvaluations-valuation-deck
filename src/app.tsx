@@ -18,7 +18,9 @@ import type {
   CollectionSummary,
   NeighborRecord,
   NeighborhoodMode,
+  TokenTrait,
   TokenWithNumber,
+  TraitDriverTier,
   ValueMode,
 } from "./data/types.ts";
 import {
@@ -325,6 +327,184 @@ function getTimelineEntrySemantic(entry: TimelineEntry) {
   return getActivityMarketType(entry) ?? "sale";
 }
 
+function buildLinearTicks(min: number, max: number, count: number) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || count <= 1) {
+    return [max];
+  }
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, index) => max - step * index);
+}
+
+function formatTimelineAxisValue(value: number) {
+  if (value >= 100) {
+    return value.toFixed(0);
+  }
+  if (value >= 20) {
+    return value.toFixed(1);
+  }
+  return value.toFixed(2);
+}
+
+function formatTimelineAgeTick(timestamp: number, latestTimestamp: number) {
+  const ageInDays = Math.max(0, Math.round((latestTimestamp - timestamp) / 86_400));
+  return ageInDays === 0 ? "now" : `${ageInDays}d`;
+}
+
+function getTimelineScopeSummary(scope: TimelineScope) {
+  switch (scope) {
+    case "token":
+      return "Selected token rows only, with local sale, ask, and active bid evidence inside the chosen window.";
+    case "neighborhood":
+      return "Selected token plus the current neighborhood set, keeping the view compact and directly comparable.";
+    default:
+      return "Collection-wide activity compressed into median-price buckets, with active collection bids overlaid.";
+  }
+}
+
+function describeTimelineAnchor(entry: TimelineEntry, collection: CollectionData) {
+  if (isAggregateTimelineEntry(entry)) {
+    return {
+      detail: `${entry.eventCount} events / ${entry.tokenCount} tokens`,
+      label: "Aggregate lane",
+      semantic: "aggregate" as const,
+    };
+  }
+
+  if (isTimelineBidEntry(entry)) {
+    return {
+      detail:
+        entry.bidScope === "collection"
+          ? "Collection-wide support"
+          : collection.tokensById.get(entry.tokenId ?? -1)?.display_name ?? "Unknown token",
+      label: entry.bidScope === "collection" ? "Collection bid" : "Token bid",
+      semantic: "bid" as const,
+    };
+  }
+
+  const semantic = getActivityMarketType(entry) === "ask" ? "ask" : "sale";
+  return {
+    detail:
+      collection.tokensById.get(entry.token_id)?.display_name ??
+      String(entry.token_index),
+    label:
+      semantic === "ask"
+        ? entry.is_private
+          ? "Private ask"
+          : "Ask"
+        : entry.is_private
+          ? "Private sale"
+          : "Sale",
+    semantic,
+  };
+}
+
+function formatSignedPercent(value: number | undefined, digits = 1) {
+  if (value === undefined) {
+    return "--";
+  }
+
+  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
+  const prefix = normalized > 0 ? "+" : "";
+  return `${prefix}${new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits,
+  }).format(normalized)}%`;
+}
+
+function getChangeTone(value: number | undefined) {
+  if (value === undefined || value === 0) {
+    return "neutral";
+  }
+  return value > 0 ? "up" : "down";
+}
+
+function getTraitDriverTier(collection: CollectionData, propertyId: number): TraitDriverTier {
+  return collection.traitAnnotationsByPropertyId.get(propertyId)?.driver_tier ?? "Not";
+}
+
+function getPrimaryTraitRows(collection: CollectionData, traits: TokenTrait[]) {
+  if (collection.traitAnnotations.length === 0) {
+    return traits.slice(0, traitPreviewCount);
+  }
+
+  const primaryRows = traits.filter(
+    (trait) => getTraitDriverTier(collection, trait.property_id) !== "Supporting",
+  );
+  return primaryRows.length > 0 ? primaryRows : traits.slice(0, traitPreviewCount);
+}
+
+function getInitialTraitSelection(collection: CollectionData, traits: TokenTrait[]) {
+  const majorTraitIds = traits
+    .filter((trait) => getTraitDriverTier(collection, trait.property_id) === "Major")
+    .map((trait) => trait.property_id);
+
+  if (majorTraitIds.length > 0) {
+    return majorTraitIds.slice(0, Math.min(3, majorTraitIds.length));
+  }
+
+  return getDefaultTraitSelection(getPrimaryTraitRows(collection, traits));
+}
+
+function getTraitRowClasses(collection: CollectionData, propertyId: number, selected: boolean) {
+  const annotation = collection.traitAnnotationsByPropertyId.get(propertyId);
+  return cx(
+    "trait-table-row",
+    annotation?.class ? `trait-class-${annotation.class.toLowerCase()}` : "",
+    annotation?.driver_tier ? `trait-tier-${annotation.driver_tier.toLowerCase()}` : "",
+    selected ? "selected" : "",
+  );
+}
+
+function getCollectionContextRows(collection: CollectionData, valueMode: ValueMode) {
+  return [
+    {
+      change: collection.context.change_floor_pct_30d,
+      label: "Floor",
+      value: formatValue(
+        collection.context.floor_eth,
+        undefined,
+        collection.metadata.eth_usd,
+        valueMode,
+      ),
+    },
+    {
+      change: collection.context.change_median_sale_30d_vs_prev30d_pct,
+      label: "30d median",
+      value: formatValue(
+        collection.context.median_sale_eth_30d,
+        undefined,
+        collection.metadata.eth_usd,
+        valueMode,
+      ),
+    },
+    {
+      change: undefined,
+      label: "Top bid",
+      value: formatValue(
+        collection.context.top_bid_eth,
+        undefined,
+        collection.metadata.eth_usd,
+        valueMode,
+      ),
+    },
+    {
+      change: undefined,
+      label: "Listed",
+      value: formatPercent(collection.context.listed_pct),
+    },
+    {
+      change: undefined,
+      label: "Volume 30d",
+      value: formatValue(
+        collection.context.sale_volume_eth_30d,
+        collection.context.sale_volume_usd_30d,
+        collection.metadata.eth_usd,
+        valueMode,
+      ),
+    },
+  ];
+}
+
 function getRarityToneClass(tone?: string) {
   return tone ? `rarity-tone-${tone}` : "";
 }
@@ -399,6 +579,38 @@ function buildTokenSignals(
   }
 
   return signals.slice(0, 5);
+}
+
+function resolveTokenSelection(collection: CollectionData, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const numericMatch = normalized.match(/\d+/);
+  if (numericMatch) {
+    const tokenNumber = Number(numericMatch[0]);
+    if (collection.tokensByNumber.has(tokenNumber)) {
+      return tokenNumber;
+    }
+  }
+
+  const exact = collection.tokens.find((token) => {
+    const label = token.display_name.toLowerCase();
+    return (
+      label === normalized ||
+      token.token_index === normalized ||
+      String(token.token_id) === normalized
+    );
+  });
+  if (exact) {
+    return exact.tokenNumber;
+  }
+
+  return collection.tokens.find((token) => {
+    const label = `${token.display_name} ${token.token_id}`.toLowerCase();
+    return label.includes(normalized);
+  })?.tokenNumber;
 }
 
 function LandingPage({
@@ -605,6 +817,20 @@ function Workbench({
       })
       .slice(0, 18);
   }, [collection.tokens, deferredSearch]);
+  const handleSelectToken = (tokenNumber: number) =>
+    startTransition(() => {
+      const params = new URLSearchParams(route.params);
+      params.set("token", String(tokenNumber));
+      onNavigate(params);
+    });
+  const handleTokenJump = (query: string) => {
+    const resolvedTokenNumber = resolveTokenSelection(collection, query);
+    if (!resolvedTokenNumber) {
+      return;
+    }
+    setSearch("");
+    handleSelectToken(resolvedTokenNumber);
+  };
 
   return (
     <main className="workbench-shell">
@@ -616,14 +842,14 @@ function Workbench({
           <p className="eyebrow">{collection.summary.artist}</p>
           <h1>{collection.summary.title} valuation workbench</h1>
           <p className="hero-copy">
-            Token art, valuation bands, repo-local market evidence, and trait-driven comp
-            context in a single review surface.
+            Token art, local market evidence, and trait-driven comp context in one compact
+            review surface.
           </p>
         </div>
         <div className="header-actions">
-          <div className="header-glance">
-            <Metric
-              label="Collection floor"
+          <div className="header-kpis">
+            <HeaderKpi
+              label="Floor"
               value={formatValue(
                 collection.context.floor_eth,
                 undefined,
@@ -631,7 +857,7 @@ function Workbench({
                 valueMode,
               )}
             />
-            <Metric
+            <HeaderKpi
               label="Top bid"
               value={formatValue(
                 collection.context.top_bid_eth,
@@ -640,7 +866,7 @@ function Workbench({
                 valueMode,
               )}
             />
-            <Metric
+            <HeaderKpi
               label="30d median"
               value={formatValue(
                 collection.context.median_sale_eth_30d,
@@ -650,7 +876,16 @@ function Workbench({
               )}
             />
           </div>
-          <ValueModeToggle valueMode={valueMode} onChange={setValueMode} />
+          <div className="header-toolbar">
+            <TokenJumpControl
+              filteredTokens={filteredTokens}
+              onChange={setSearch}
+              onSubmit={handleTokenJump}
+              search={search}
+              selectedToken={selectedToken}
+            />
+            <ValueModeToggle valueMode={valueMode} onChange={setValueMode} />
+          </div>
         </div>
       </header>
       <section className="workbench-grid">
@@ -658,7 +893,6 @@ function Workbench({
           key={selectedToken.token_id}
           activeView={activeView}
           collection={collection}
-          filteredTokens={filteredTokens}
           neighborhoodMode={neighborhoodMode}
           onActiveViewChange={(view) => {
             const params = new URLSearchParams(route.params);
@@ -676,15 +910,7 @@ function Workbench({
             params.set("mode", mode);
             onNavigate(params);
           }}
-          onSearchChange={setSearch}
-          onSelectToken={(tokenNumber) =>
-            startTransition(() => {
-              const params = new URLSearchParams(route.params);
-              params.set("token", String(tokenNumber));
-              onNavigate(params);
-            })
-          }
-          search={search}
+          onSelectToken={handleSelectToken}
           selectedToken={selectedToken}
           valueMode={valueMode}
         />
@@ -696,29 +922,25 @@ function Workbench({
 function TokenWorkbenchPanels({
   activeView,
   collection,
-  filteredTokens,
   neighborhoodMode,
   onActiveViewChange,
   onNeighborhoodModeChange,
-  onSearchChange,
   onSelectToken,
-  search,
   selectedToken,
   valueMode,
 }: {
   activeView: "timeline" | "neighborhood";
   collection: CollectionData;
-  filteredTokens: TokenWithNumber[];
   neighborhoodMode: NeighborhoodMode;
   onActiveViewChange: (view: "timeline" | "neighborhood") => void;
   onNeighborhoodModeChange: (mode: NeighborhoodMode) => void;
-  onSearchChange: (value: string) => void;
   onSelectToken: (tokenNumber: number) => void;
-  search: string;
   selectedToken: TokenWithNumber;
   valueMode: ValueMode;
 }) {
   const visibleTraits = getVisibleTraits(collection, selectedToken.token_id);
+  const primaryTraitRows = getPrimaryTraitRows(collection, visibleTraits);
+  const collectionContextRows = getCollectionContextRows(collection, valueMode);
   const tokenBids = getTopTokenBids(collection, selectedToken.token_id);
   const collectionBids = getTopCollectionBids(collection);
   const marketBand = summarizeMarketBand(selectedToken, tokenBids);
@@ -729,7 +951,7 @@ function TokenWorkbenchPanels({
   const [neighborhoodSize, setNeighborhoodSize] = useState<NeighborhoodSizeOption>(50);
   const [showAllTraits, setShowAllTraits] = useState(false);
   const [activeTraits, setActiveTraits] = useState<number[]>(() =>
-    getDefaultTraitSelection(visibleTraits),
+    getInitialTraitSelection(collection, visibleTraits),
   );
   const [inspectedTimelineKey, setInspectedTimelineKey] = useState<string | undefined>();
   const allNeighbors = deriveNeighbors(collection, selectedToken, neighborhoodMode);
@@ -850,47 +1072,6 @@ function TokenWorkbenchPanels({
   return (
     <>
       <aside className="left-column">
-        <section className="panel token-selector-panel">
-          <div className="token-selector-head">
-            <div>
-              <p className="eyebrow">Token selector</p>
-              <h2>{selectedToken.display_name}</h2>
-            </div>
-            <span className="pill muted">Shareable URL state</span>
-          </div>
-          <label className="search-box">
-            <span>Jump to token</span>
-            <input
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Type #239 or token id"
-              value={search}
-            />
-          </label>
-          <div className="token-results">
-            {filteredTokens.map((token) => (
-              <button
-                key={token.token_id}
-                className={token.token_id === selectedToken.token_id ? "token-chip active" : "token-chip"}
-                onClick={() => onSelectToken(token.tokenNumber)}
-                type="button"
-              >
-                <strong>{token.display_name}</strong>
-                <div className="chip-copy">
-                  <span>
-                    {formatValue(
-                      token.current_ask_eth,
-                      undefined,
-                      collection.metadata.eth_usd,
-                      "eth",
-                    )}
-                  </span>
-                  <small>Rank {token.rarity_rank ?? "N/A"}</small>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-
         <section className="panel token-spotlight">
           <div className="token-stage">
             <div className="token-stage-top">
@@ -932,31 +1113,34 @@ function TokenWorkbenchPanels({
             </div>
             <div className="market-band">
               <Metric
-                label="Bid"
+                label="Current ask"
+                value={formatValue(
+                  selectedToken.current_ask_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+                note={selectedToken.current_ask_eth ? "Live ask" : "No live ask"}
+              />
+              <Metric
+                label="Last sale"
+                value={formatValue(
+                  selectedToken.last_single_sale_eth,
+                  selectedToken.last_single_sale_usd,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+                note={formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}
+              />
+              <Metric
+                label="Top token bid"
                 value={formatValue(
                   marketBand.topBidEth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
                 )}
-              />
-              <Metric
-                label="Fair"
-                value={formatValue(
-                  marketBand.fairEth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              />
-              <Metric
-                label="List"
-                value={formatValue(
-                  marketBand.listEth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
+                note={marketBand.topBidEth ? "Active token support" : "No live token bid"}
               />
             </div>
             <div className="token-summary-grid">
@@ -970,35 +1154,13 @@ function TokenWorkbenchPanels({
                 )}
               />
               <Metric
-                label="Base model"
+                label="Model output"
                 value={formatValue(
-                  selectedToken.nfti_v2_base_eth,
+                  selectedToken.prediction_eth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
                 )}
-              />
-              <Metric
-                label="Trim model"
-                value={formatValue(
-                  selectedToken.nfti_v2_trim_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              />
-              <Metric
-                label="Last sale"
-                value={formatValue(
-                  selectedToken.last_single_sale_eth,
-                  selectedToken.last_single_sale_usd,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              />
-              <Metric
-                label="Last sale age"
-                value={formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}
               />
               <Metric
                 label="Rarity rank"
@@ -1009,15 +1171,6 @@ function TokenWorkbenchPanels({
                 }
               />
               <Metric label="Minted" value={formatDate(selectedToken.mint_ts)} />
-              <Metric
-                label="Current ask"
-                value={formatValue(
-                  selectedToken.current_ask_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              />
             </div>
           </div>
         </section>
@@ -1026,58 +1179,26 @@ function TokenWorkbenchPanels({
           <div className="section-head">
             <div>
               <p className="eyebrow">Collection context</p>
-              <h2>Deck anchors</h2>
+              <h2>Compact context rows</h2>
             </div>
             <span className="pill muted">Context, not verdict</span>
           </div>
-          <div className="context-grid">
-            <Metric
-              label="Floor"
-              value={formatValue(
-                collection.context.floor_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Top bid"
-              value={formatValue(
-                collection.context.top_bid_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Median sale 30d"
-              value={formatValue(
-                collection.context.median_sale_eth_30d,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric label="Listed %" value={formatPercent(collection.context.listed_pct)} />
-            <Metric
-              label="Volume 30d"
-              value={formatValue(
-                collection.context.sale_volume_eth_30d,
-                collection.context.sale_volume_usd_30d,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Floor change 30d"
-              value={formatPercent(collection.context.change_floor_pct_30d)}
-            />
+          <div className="context-table">
+            <div className="context-table-head">
+              <span>Delta</span>
+              <span>Metric</span>
+              <span>Value</span>
+            </div>
+            {collectionContextRows.map((row) => (
+              <div className="context-table-row" key={row.label}>
+                <span className={`context-delta ${getChangeTone(row.change)}`}>
+                  {formatSignedPercent(row.change)}
+                </span>
+                <strong>{row.label}</strong>
+                <span>{row.value}</span>
+              </div>
+            ))}
           </div>
-          <CollectionRegimeCard
-            collection={collection}
-            referenceTimestamp={referenceTimestamp}
-            valueMode={valueMode}
-          />
         </section>
       </aside>
 
@@ -1113,12 +1234,17 @@ function TokenWorkbenchPanels({
               ethUsd={collection.metadata.eth_usd}
               inspectedEntry={inspectedTimelineEntry}
               legend={timelineData.legend}
+              neighborhoodMode={neighborhoodMode}
+              neighborhoodSize={neighborhoodSize}
               neighborhoodShownCount={visibleNeighbors.length}
+              onNeighborhoodModeChange={onNeighborhoodModeChange}
+              onNeighborhoodSizeChange={setNeighborhoodSize}
               onInspect={(entry) => setInspectedTimelineKey(getTimelineEntryKey(entry))}
               onRangeChange={setTimelineRange}
               onScopeChange={setTimelineScope}
               range={timelineRange}
               scope={timelineScope}
+              totalNeighborCount={allNeighbors.length}
               valueMode={valueMode}
             />
           ) : (
@@ -1157,15 +1283,16 @@ function TokenWorkbenchPanels({
               <span>Latest clean sale</span>
               <span>Median 30d</span>
             </div>
-            {(showAllTraits ? visibleTraits : visibleTraits.slice(0, traitPreviewCount)).map(
+            {(showAllTraits ? visibleTraits : primaryTraitRows).map(
               (trait) => {
                 const enabled = activeTraits.includes(trait.property_id);
                 const support = collection.traitSupportByPropertyId.get(trait.property_id);
+                const annotation = collection.traitAnnotationsByPropertyId.get(trait.property_id);
                 return (
                   <button
                     key={trait.property_id}
                     aria-pressed={enabled}
-                    className={enabled ? "trait-table-row selected" : "trait-table-row"}
+                    className={getTraitRowClasses(collection, trait.property_id, enabled)}
                     onClick={() =>
                       setActiveTraits((current) =>
                         enabled
@@ -1178,7 +1305,11 @@ function TokenWorkbenchPanels({
                     <span className="trait-check">{enabled ? "x" : ""}</span>
                     <span className="trait-copy">
                       <strong>{trait.category_name}: {trait.property_name}</strong>
-                      <small>{trait.property_token_count} matching tokens</small>
+                      <small>
+                        {trait.property_token_count} matching tokens
+                        {annotation?.driver_tier ? ` / ${annotation.driver_tier}` : ""}
+                        {annotation?.class ? ` / ${annotation.class}` : ""}
+                      </small>
                     </span>
                     <span>{formatPercent(support?.token_share_pct)}</span>
                     <span>
@@ -1211,7 +1342,7 @@ function TokenWorkbenchPanels({
             )}
           </div>
           <div className="trait-actions">
-            {visibleTraits.length > traitPreviewCount ? (
+            {visibleTraits.length > primaryTraitRows.length ? (
               <button
                 className="secondary-button"
                 onClick={() => setShowAllTraits((current) => !current)}
@@ -1225,6 +1356,12 @@ function TokenWorkbenchPanels({
             <span className="pill muted">
               {activeTraits.length} selected row{activeTraits.length === 1 ? "" : "s"}
             </span>
+            {!showAllTraits && visibleTraits.length > primaryTraitRows.length ? (
+              <span className="pill muted">
+                {visibleTraits.length - primaryTraitRows.length} supporting row
+                {visibleTraits.length - primaryTraitRows.length === 1 ? "" : "s"} hidden
+              </span>
+            ) : null}
           </div>
           <div className="combined-trait-card">
             <div className="section-head">
@@ -1586,11 +1723,70 @@ function DecisionCard({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function HeaderKpi({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="header-kpi">
+      <strong>{label}</strong>
+      <span>{value}</span>
+    </span>
+  );
+}
+
+function TokenJumpControl({
+  filteredTokens,
+  onChange,
+  onSubmit,
+  search,
+  selectedToken,
+}: {
+  filteredTokens: TokenWithNumber[];
+  onChange: (value: string) => void;
+  onSubmit: (value: string) => void;
+  search: string;
+  selectedToken: TokenWithNumber;
+}) {
+  const listId = "token-jump-options";
+
+  return (
+    <form
+      className="token-jump-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit(search);
+      }}
+    >
+      <label className="token-jump-label" htmlFor="token-jump-input">
+        Token
+      </label>
+      <input
+        className="token-jump-input"
+        id="token-jump-input"
+        list={listId}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={String(selectedToken.tokenNumber)}
+        value={search}
+      />
+      <datalist id={listId}>
+        {filteredTokens.map((token) => (
+          <option key={token.token_id} value={String(token.tokenNumber)}>
+            {token.display_name}
+          </option>
+        ))}
+      </datalist>
+      <button className="token-jump-button" type="submit">
+        Go
+      </button>
+      <span className="token-jump-current">{selectedToken.display_name}</span>
+    </form>
+  );
+}
+
+function Metric({ label, note, value }: { label: string; note?: string; value: string }) {
   return (
     <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
+      {note ? <small>{note}</small> : null}
     </div>
   );
 }
@@ -1603,10 +1799,10 @@ function ValueModeToggle({
   onChange: (mode: ValueMode) => void;
 }) {
   const modes: Array<{ label: string; value: ValueMode }> = [
-    { label: "ETH", value: "eth" },
+    { label: "Ξ", value: "eth" },
     { label: "USD", value: "usd" },
-    { label: "USD + ETH", value: "usd-eth" },
-    { label: "ETH + USD", value: "eth-usd" },
+    { label: "USD + Ξ", value: "usd-eth" },
+    { label: "Ξ + USD", value: "eth-usd" },
   ];
 
   return (
@@ -1688,12 +1884,17 @@ function TimelinePanel({
   ethUsd,
   inspectedEntry,
   legend,
+  neighborhoodMode,
+  neighborhoodSize,
   neighborhoodShownCount,
+  onNeighborhoodModeChange,
+  onNeighborhoodSizeChange,
   onInspect,
   onRangeChange,
   onScopeChange,
   range,
   scope,
+  totalNeighborCount,
   valueMode,
 }: {
   collection: CollectionData;
@@ -1701,27 +1902,82 @@ function TimelinePanel({
   ethUsd: number;
   inspectedEntry?: TimelineEntry;
   legend: TimelineLegend;
+  neighborhoodMode: NeighborhoodMode;
+  neighborhoodSize: NeighborhoodSizeOption;
   neighborhoodShownCount: number;
+  onNeighborhoodModeChange: (mode: NeighborhoodMode) => void;
+  onNeighborhoodSizeChange: (size: NeighborhoodSizeOption) => void;
   onInspect: (entry: TimelineEntry) => void;
   onRangeChange: (range: TimelineRange) => void;
   onScopeChange: (scope: TimelineScope) => void;
   range: TimelineRange;
   scope: TimelineScope;
+  totalNeighborCount: number;
   valueMode: ValueMode;
 }) {
   const chartEntries = [...entries].sort((left, right) => left.timestamp - right.timestamp);
-  const maxPrice = Math.max(...chartEntries.map((entry) => getTimelineEntryValue(entry)), 1);
+  const referenceValues = [
+    collection.context.floor_eth,
+    collection.context.median_sale_eth_30d,
+    collection.context.top_bid_eth,
+  ].filter((value): value is number => typeof value === "number" && value > 0);
+  const chartValues = chartEntries
+    .map((entry) => getTimelineEntryValue(entry))
+    .filter((value): value is number => Number.isFinite(value) && value > 0);
+  const rawMin = Math.min(...(chartValues.length > 0 ? chartValues : [0]), ...referenceValues);
+  const rawMax = Math.max(...(chartValues.length > 0 ? chartValues : [1]), ...referenceValues, 1);
+  const pricePadding = Math.max((rawMax - rawMin) * 0.16, rawMax * 0.06, 0.75);
+  const minPrice = Math.max(0, rawMin - pricePadding);
+  const maxPrice = rawMax + pricePadding;
   const timestamps = chartEntries.map((entry) => entry.timestamp);
   const minTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : 0;
   const maxTimestamp = timestamps.length > 0 ? Math.max(...timestamps) : 1;
+  const frame = {
+    bottom: 246,
+    height: 214,
+    left: 56,
+    right: 732,
+    top: 32,
+    width: 676,
+  };
+  const getX = (timestamp: number) =>
+    frame.left +
+    ((timestamp - minTimestamp) / Math.max(maxTimestamp - minTimestamp, 1)) * frame.width;
+  const getY = (value: number) =>
+    frame.bottom -
+    ((value - minPrice) / Math.max(maxPrice - minPrice, 1)) * frame.height;
   const linePoints = chartEntries.map((entry) => {
-    const x =
-      44 + ((entry.timestamp - minTimestamp) / Math.max(maxTimestamp - minTimestamp, 1)) * 676;
-    const y = 210 - (getTimelineEntryValue(entry) / maxPrice) * 176;
+    const x = getX(entry.timestamp);
+    const y = getY(getTimelineEntryValue(entry));
     return { x, y };
   });
   const linePath =
     scope === "aggregate" && linePoints.length > 1 ? describePath(linePoints) : "";
+  const yTicks = buildLinearTicks(minPrice, maxPrice, 5);
+  const xTicks = buildLinearTicks(minTimestamp, maxTimestamp, 5);
+  const floorReference = collection.context.floor_eth;
+  const medianReference = collection.context.median_sale_eth_30d;
+  const topBidReference = collection.context.top_bid_eth;
+  const floorY =
+    typeof floorReference === "number" ? getY(floorReference) : undefined;
+  const medianY = typeof medianReference === "number" ? getY(medianReference) : undefined;
+  const topBidY = typeof topBidReference === "number" ? getY(topBidReference) : undefined;
+  const chartNote =
+    scope === "neighborhood"
+      ? `${neighborhoodShownCount} neighborhood tokens shown in this view.`
+      : scope === "aggregate"
+        ? "Aggregate buckets smooth token-level noise into collection-wide windows."
+        : "Bid markers reflect active local bid snapshots only.";
+  const neighborhoodModes: Array<{
+    disabled?: boolean;
+    label: string;
+    value: NeighborhoodMode;
+  }> = [
+    { label: "Trait", value: "trait" },
+    { label: "Rarity", value: "rarity" },
+    { label: "Visual", value: "visual", disabled: true },
+    { label: "Curated", value: "curated", disabled: true },
+  ];
 
   return (
     <section className="timeline-card">
@@ -1751,27 +2007,55 @@ function TimelinePanel({
           ))}
         </div>
       </div>
-      <div className="timeline-legend">
-        <span className="legend-pill">Shown {legend.total}</span>
-        <span className="legend-pill sale">Sales {legend.saleCount}</span>
-        <span className="legend-pill ask">Asks {legend.askCount}</span>
-        <span className="legend-pill bid">Bids {legend.bidCount}</span>
-        <span className="legend-pill private">Private {legend.privateCount}</span>
-        <span className="legend-pill">Tokens {legend.tokenCount}</span>
-        {scope === "neighborhood" ? (
-          <span className="legend-pill">Neighborhood size {neighborhoodShownCount}</span>
-        ) : null}
+      <div className="timeline-subhead">
+        <div className="timeline-legend">
+          <span className="legend-pill">Shown {legend.total}</span>
+          <span className="legend-pill sale">Sales {legend.saleCount}</span>
+          <span className="legend-pill ask">Asks {legend.askCount}</span>
+          <span className="legend-pill bid">Bids {legend.bidCount}</span>
+          <span className="legend-pill private">Private {legend.privateCount}</span>
+          <span className="legend-pill">Tokens {legend.tokenCount}</span>
+        </div>
+        <p className="timeline-caption">{getTimelineScopeSummary(scope)}</p>
       </div>
-      <p className="footnote">
-        {scope === "token"
-          ? "Token-only scope mixes local sale rows, ask/listing rows, and active token bids that opened in the chosen recency window."
-          : scope === "neighborhood"
-            ? "Token + neighborhood combines the selected token with the current local neighborhood result set, including active token bids for the shown tokens."
-            : "Aggregate lane groups collection-wide sale/ask activity into median-price windows and overlays active collection bids by bid-open timestamp."}
-      </p>
-      <p className="footnote">
-        Bid markers use active bid start times plus expiry from the local snapshot only; the workbench does not infer missing bid history.
-      </p>
+      {scope === "neighborhood" ? (
+        <div className="definition-box">
+          <div className="definition-copy">
+            <strong>Neighborhood definition</strong>
+            <small>These settings drive the current token + neighborhood evidence set.</small>
+          </div>
+          <div className="definition-actions">
+            <div className="segmented-control wrap compact">
+              {neighborhoodModes.map((entry) => (
+                <button
+                  key={entry.value}
+                  className={neighborhoodMode === entry.value ? "selected" : ""}
+                  disabled={entry.disabled}
+                  onClick={() => !entry.disabled && onNeighborhoodModeChange(entry.value)}
+                  type="button"
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+            <div className="segmented-control wrap compact">
+              {neighborhoodSizeOptions.map((option) => (
+                <button
+                  key={`timeline-neighborhood-${String(option)}`}
+                  className={neighborhoodSize === option ? "selected" : ""}
+                  onClick={() => onNeighborhoodSizeChange(option)}
+                  type="button"
+                >
+                  {option === "max" ? "Max" : option}
+                </button>
+              ))}
+            </div>
+            <span className="legend-pill">
+              {neighborhoodShownCount} shown / {totalNeighborCount} total
+            </span>
+          </div>
+        </div>
+      ) : null}
       {entries.length === 0 ? (
         <div className="empty-state">
           <strong>No priced events in the selected window.</strong>
@@ -1779,143 +2063,197 @@ function TimelinePanel({
         </div>
       ) : (
         <>
-          <svg className="timeline-chart" viewBox="0 0 760 250" role="img">
-            <line x1="44" x2="44" y1="18" y2="210" className="axis-line" />
-            <line x1="44" x2="720" y1="210" y2="210" className="axis-line" />
-            {linePath ? <path className="timeline-path" d={linePath} /> : null}
-            {chartEntries.map((entry, index) => {
-              const point = linePoints[index] ?? { x: 44, y: 210 };
-              const privateMark =
-                !isAggregateTimelineEntry(entry) &&
-                !isTimelineBidEntry(entry) &&
-                (entry.is_private || entry.kind.includes("private"));
-              const selected = inspectedEntry
-                ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
-                : false;
-              const semantic = getTimelineEntrySemantic(entry);
-              const className = [
-                "timeline-dot",
-                semantic,
-                privateMark ? "private" : "",
-                selected ? "selected" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-
-              if (semantic === "ask") {
-                return (
-                  <g key={getTimelineEntryKey(entry)}>
-                    <rect
-                      className={className}
-                      height={selected ? 14 : 12}
-                      onClick={() => onInspect(entry)}
-                      rx={2}
-                      transform={`rotate(45 ${point.x} ${point.y})`}
-                      width={selected ? 14 : 12}
-                      x={point.x - (selected ? 7 : 6)}
-                      y={point.y - (selected ? 7 : 6)}
-                    />
-                  </g>
-                );
-              }
-
-              if (semantic === "bid") {
-                const offset = selected ? 8 : 7;
-                return (
-                  <g key={getTimelineEntryKey(entry)}>
-                    <polygon
-                      className={className}
-                      onClick={() => onInspect(entry)}
-                      points={`${point.x},${point.y - offset} ${point.x - offset},${point.y + offset - 2} ${point.x + offset},${point.y + offset - 2}`}
-                    />
-                  </g>
-                );
-              }
-
-              return (
-                <g key={getTimelineEntryKey(entry)}>
-                  <circle
-                    className={className}
-                    cx={point.x}
-                    cy={point.y}
-                    onClick={() => onInspect(entry)}
-                    r={selected ? 7 : semantic === "aggregate" ? 6 : 5}
+          <div className="timeline-chart-frame">
+            <svg className="timeline-chart" viewBox="0 0 760 288" role="img">
+              <rect
+                className="timeline-plot-surface"
+                height={frame.height}
+                rx={18}
+                width={frame.width}
+                x={frame.left}
+                y={frame.top}
+              />
+              {typeof floorY === "number" && typeof medianY === "number" ? (
+                <rect
+                  className="timeline-reference-band"
+                  height={Math.abs(floorY - medianY)}
+                  width={frame.width}
+                  x={frame.left}
+                  y={Math.min(floorY, medianY)}
+                />
+              ) : null}
+              {yTicks.map((tick) => (
+                <g key={`y-${tick.toFixed(2)}`}>
+                  <line
+                    className="timeline-grid-line"
+                    x1={frame.left}
+                    x2={frame.right}
+                    y1={getY(tick)}
+                    y2={getY(tick)}
                   />
+                  <text
+                    className="timeline-axis-label"
+                    textAnchor="end"
+                    x={frame.left - 10}
+                    y={getY(tick) + 4}
+                  >
+                    {formatTimelineAxisValue(tick)}
+                  </text>
                 </g>
-              );
-            })}
-          </svg>
-          <div className="timeline-list">
-            {entries.slice(0, 8).map((entry) => {
+              ))}
+              {xTicks.map((tick, index) => (
+                <g key={`x-${index}-${tick.toFixed(0)}`}>
+                  <line
+                    className="timeline-grid-line vertical"
+                    x1={getX(tick)}
+                    x2={getX(tick)}
+                    y1={frame.top}
+                    y2={frame.bottom}
+                  />
+                  <text
+                    className="timeline-axis-label"
+                    textAnchor="middle"
+                    x={getX(tick)}
+                    y={frame.bottom + 24}
+                  >
+                    {formatTimelineAgeTick(tick, maxTimestamp)}
+                  </text>
+                </g>
+              ))}
+              <line
+                className="axis-line"
+                x1={frame.left}
+                x2={frame.left}
+                y1={frame.top}
+                y2={frame.bottom}
+              />
+              <line
+                className="axis-line"
+                x1={frame.left}
+                x2={frame.right}
+                y1={frame.bottom}
+                y2={frame.bottom}
+              />
+              {typeof medianReference === "number" && typeof medianY === "number" ? (
+                <>
+                  <line
+                    className="timeline-reference-line median"
+                    x1={frame.left}
+                    x2={frame.right}
+                    y1={medianY}
+                    y2={medianY}
+                  />
+                  <text className="timeline-reference-label" x={frame.left + 10} y={medianY - 8}>
+                    30d median {formatTimelineAxisValue(medianReference)}
+                  </text>
+                </>
+              ) : null}
+              {typeof topBidReference === "number" && typeof topBidY === "number" ? (
+                <>
+                  <line
+                    className="timeline-reference-line bid"
+                    x1={frame.left}
+                    x2={frame.right}
+                    y1={topBidY}
+                    y2={topBidY}
+                  />
+                  <text className="timeline-reference-label" x={frame.left + 10} y={topBidY - 8}>
+                    top bid {formatTimelineAxisValue(topBidReference)}
+                  </text>
+                </>
+              ) : null}
+              {linePath ? <path className="timeline-path" d={linePath} /> : null}
+              {chartEntries.map((entry, index) => {
+                const point = linePoints[index] ?? { x: frame.left, y: frame.bottom };
+                const privateMark =
+                  !isAggregateTimelineEntry(entry) &&
+                  !isTimelineBidEntry(entry) &&
+                  (entry.is_private || entry.kind.includes("private"));
+                const selected = inspectedEntry
+                  ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
+                  : false;
+                const semantic = getTimelineEntrySemantic(entry);
+                const className = [
+                  "timeline-dot",
+                  semantic,
+                  privateMark ? "private" : "",
+                  selected ? "selected" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+
+                if (semantic === "ask") {
+                  return (
+                    <g key={getTimelineEntryKey(entry)}>
+                      <rect
+                        className={className}
+                        height={selected ? 16 : 13}
+                        onClick={() => onInspect(entry)}
+                        rx={2}
+                        transform={`rotate(45 ${point.x} ${point.y})`}
+                        width={selected ? 16 : 13}
+                        x={point.x - (selected ? 8 : 6.5)}
+                        y={point.y - (selected ? 8 : 6.5)}
+                      />
+                    </g>
+                  );
+                }
+
+                if (semantic === "bid") {
+                  const offset = selected ? 9 : 7;
+                  return (
+                    <g key={getTimelineEntryKey(entry)}>
+                      <polygon
+                        className={className}
+                        onClick={() => onInspect(entry)}
+                        points={`${point.x},${point.y - offset} ${point.x - offset},${point.y + offset - 2} ${point.x + offset},${point.y + offset - 2}`}
+                      />
+                    </g>
+                  );
+                }
+
+                return (
+                  <g key={getTimelineEntryKey(entry)}>
+                    <circle
+                      className={className}
+                      cx={point.x}
+                      cy={point.y}
+                      onClick={() => onInspect(entry)}
+                      r={selected ? 9 : semantic === "aggregate" ? 6.5 : 5.5}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+            <div className="timeline-axis-notes">
+              <span>Price axis in Ξ.</span>
+              <span>{chartNote}</span>
+            </div>
+          </div>
+          <div className="timeline-anchor-list">
+            {entries.slice(0, 6).map((entry) => {
               const selected = inspectedEntry
                 ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
                 : false;
+              const anchor = describeTimelineAnchor(entry, collection);
+              const value = isAggregateTimelineEntry(entry)
+                ? formatValue(entry.medianPriceEth, undefined, ethUsd, valueMode)
+                : isTimelineBidEntry(entry)
+                  ? formatValue(entry.priceEth, entry.priceUsd, ethUsd, valueMode)
+                  : formatValue(entry.price_eth, entry.price_usd, ethUsd, valueMode);
               return (
                 <button
                   key={getTimelineEntryKey(entry)}
-                  className={selected ? "timeline-row active" : "timeline-row"}
+                  className={selected ? "timeline-anchor active" : "timeline-anchor"}
                   onClick={() => onInspect(entry)}
                   type="button"
                 >
-                  {isAggregateTimelineEntry(entry) ? (
-                    <>
-                      <div>
-                        <span>Aggregate lane</span>
-                        <small>
-                          {formatCompactDate(entry.startTimestamp)} to{" "}
-                          {formatCompactDate(entry.endTimestamp)} / {entry.eventCount} events
-                        </small>
-                      </div>
-                      <div className="neighbor-metrics">
-                        <strong>
-                          {formatValue(entry.medianPriceEth, undefined, ethUsd, valueMode)}
-                        </strong>
-                        <small>{entry.tokenCount} tokens</small>
-                      </div>
-                    </>
-                  ) : isTimelineBidEntry(entry) ? (
-                    <>
-                      <div>
-                        <span>{entry.bidScope === "collection" ? "Collection bid" : "Token bid"}</span>
-                        <small>
-                          {entry.bidScope === "collection"
-                            ? "Collection-wide active support"
-                            : collection.tokensById.get(entry.tokenId ?? -1)?.display_name ??
-                              "Unknown token"}
-                        </small>
-                      </div>
-                      <div className="neighbor-metrics">
-                        <strong>
-                          {formatValue(entry.priceEth, entry.priceUsd, ethUsd, valueMode)}
-                        </strong>
-                        <small>opens {formatCompactDate(entry.timestamp)}</small>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <span>
-                          {getActivityMarketType(entry) === "ask"
-                            ? entry.is_private
-                              ? "Private ask"
-                              : "Ask"
-                            : entry.is_private
-                              ? "Private sale"
-                              : "Sale"}
-                        </span>
-                        <small>
-                          {collection.tokensById.get(entry.token_id)?.display_name ??
-                            entry.token_index}
-                        </small>
-                      </div>
-                      <div className="neighbor-metrics">
-                        <strong>
-                          {formatValue(entry.price_eth, entry.price_usd, ethUsd, valueMode)}
-                        </strong>
-                        <small>{formatCompactDate(entry.timestamp)}</small>
-                      </div>
-                    </>
-                  )}
+                  <span className={`timeline-anchor-type ${anchor.semantic}`}>{anchor.label}</span>
+                  <div className="timeline-anchor-copy">
+                    <strong>{anchor.detail}</strong>
+                    <small>{formatCompactDate(entry.timestamp)}</small>
+                  </div>
+                  <span className="timeline-anchor-value">{value}</span>
                 </button>
               );
             })}
@@ -2144,77 +2482,6 @@ function NeighborhoodPanel({
         ))}
       </div>
     </section>
-  );
-}
-
-function CollectionRegimeCard({
-  collection,
-  referenceTimestamp,
-  valueMode,
-}: {
-  collection: CollectionData;
-  referenceTimestamp: number;
-  valueMode: ValueMode;
-}) {
-  const recentSnapshots = collection.snapshots
-    .filter((snapshot) => snapshot.floor_eth !== undefined && snapshot.floor_eth > 0)
-    .filter((snapshot) => snapshot.timestamp >= referenceTimestamp - 180 * 24 * 60 * 60)
-    .filter((_, index, snapshots) => {
-      const step = Math.max(Math.floor(snapshots.length / 40), 1);
-      return index % step === 0 || index === snapshots.length - 1;
-    });
-  const floorValues = recentSnapshots.map((snapshot) => snapshot.floor_eth ?? 0);
-  const minFloor = Math.min(...floorValues, 0);
-  const maxFloor = Math.max(...floorValues, 1);
-  const sparklinePoints = recentSnapshots.map((snapshot, index) => {
-    const x = 12 + (index / Math.max(recentSnapshots.length - 1, 1)) * 336;
-    const y =
-      92 - (((snapshot.floor_eth ?? 0) - minFloor) / Math.max(maxFloor - minFloor, 1)) * 72;
-    return { x, y };
-  });
-  const linePath = sparklinePoints.length > 1 ? describePath(sparklinePoints) : "";
-  const areaPath =
-    sparklinePoints.length > 1
-      ? `${linePath} L ${sparklinePoints[sparklinePoints.length - 1]?.x.toFixed(1) ?? "348"} 96 L ${sparklinePoints[0]?.x.toFixed(1) ?? "12"} 96 Z`
-      : "";
-  const latestSnapshot = collection.snapshots[collection.snapshots.length - 1];
-
-  return (
-    <div className="regime-card">
-      <div className="section-head">
-        <div>
-          <p className="eyebrow">Collection regime</p>
-          <h3>180d floor sparkline</h3>
-        </div>
-        <span className="pill muted">Placeholder lane</span>
-      </div>
-      <svg className="regime-chart" viewBox="0 0 360 108" role="img">
-        <line className="axis-line" x1="12" x2="348" y1="96" y2="96" />
-        {areaPath ? <path className="regime-area" d={areaPath} /> : null}
-        {linePath ? <path className="regime-line" d={linePath} /> : null}
-      </svg>
-      <div className="context-grid">
-        <Metric
-          label="Current floor"
-          value={formatValue(
-            latestSnapshot?.floor_eth,
-            undefined,
-            collection.metadata.eth_usd,
-            valueMode,
-          )}
-        />
-        <Metric
-          label="Floor change 90d"
-          value={formatPercent(collection.context.change_floor_pct_90d)}
-        />
-        <Metric label="Listings" value={`${latestSnapshot?.listing_count ?? "N/A"}`} />
-        <Metric label="Owners" value={`${latestSnapshot?.owner_count ?? "N/A"}`} />
-      </div>
-      <p className="footnote">
-        This regime area is intentionally local-only. The sparkline reflects snapshot floors, while
-        any future named regime labels should wait for a deterministic offline ruleset.
-      </p>
-    </div>
   );
 }
 

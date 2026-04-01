@@ -27,6 +27,45 @@ npm run build:docs
 
 This rebuilds the app and copies the production output into `docs/`, which is the committed fallback snapshot for GitHub Pages. If you change shipped UI code, styles, routing, or data loading, refresh `docs/` and commit it too.
 
+## Optional trait row annotations
+
+If you want the trait table to use explicit row coloring and driver tiers, add an optional `trait_annotations.json` file inside a collection folder:
+
+- `<collection-slug>/trait_annotations.json`
+- or `<collection-slug>/data/trait_annotations.json`
+
+The app reads it if present and falls back gracefully if it is missing.
+
+Schema:
+
+```json
+{
+  "version": 1,
+  "traits": [
+    {
+      "property_id": 1234,
+      "class": "Positive",
+      "driver_tier": "Major",
+      "note": "Optional free-text note"
+    }
+  ]
+}
+```
+
+Supported values:
+
+- `class`: `Positive`, `Neutral`, `Grail`, `Negative`
+- `driver_tier`: `Major`, `Supporting`, `Not`
+
+Current UI behavior:
+
+- `class` controls the row tint
+- `Supporting` rows are hidden by default until the user expands the table
+- `Major` rows are preferred for the initial checked rows
+- `Not` rows remain visible but are not prioritized
+
+`property_id` must match the IDs already present in `token_traits.json` and `trait_support.json`.
+
 ## GitHub Pages
 
 This repo includes:

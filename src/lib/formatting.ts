@@ -1,5 +1,7 @@
 import type { ValueMode } from "../data/types.ts";
 
+const ETH_SYMBOL = "Ξ";
+
 function formatNumber(value: number, digits = 2) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: digits,
@@ -20,7 +22,7 @@ export function formatValue(
   const resolvedEth = ethValue ?? (usdValue !== undefined ? usdValue / ethUsd : undefined);
   const resolvedUsd = usdValue ?? (ethValue !== undefined ? ethValue * ethUsd : undefined);
 
-  const ethText = resolvedEth === undefined ? null : `${formatNumber(resolvedEth)} ETH`;
+  const ethText = resolvedEth === undefined ? null : `${formatNumber(resolvedEth)} ${ETH_SYMBOL}`;
   const usdText =
     resolvedUsd === undefined ? null : `$${formatNumber(resolvedUsd, resolvedUsd > 999 ? 0 : 2)}`;
 

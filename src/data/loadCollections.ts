@@ -7,6 +7,8 @@ import type {
   CollectionSnapshot,
   CollectionSummary,
   TokenRecord,
+  TraitAnnotation,
+  TraitAnnotationFile,
   TokenTrait,
   TokenWithNumber,
   TraitSupport,
@@ -87,6 +89,15 @@ const fileImporters: Record<
   "trait_support.json": {
     ...import.meta.glob("../../*/trait_support.json", { import: "default" }),
     ...import.meta.glob("../../*/data/trait_support.json", { import: "default" }),
+  },
+};
+
+const optionalFileImporters = {
+  "trait_annotations.json": {
+    ...import.meta.glob("../../*/trait_annotations.json", { import: "default" }),
+    ...import.meta.glob("../../*/data/trait_annotations.json", {
+      import: "default",
+    }),
   },
 };
 
@@ -213,6 +224,12 @@ export async function loadCollection(slug: string): Promise<CollectionData> {
   const traitSupport = [...(fileMap["trait_support.json"] as TraitSupport[])].sort(
     (left, right) => right.token_count - left.token_count,
   );
+  const traitAnnotationImporter = findModule(optionalFileImporters["trait_annotations.json"], slug);
+  const rawTraitAnnotations = traitAnnotationImporter ? await traitAnnotationImporter() : undefined;
+  const traitAnnotationFile = rawTraitAnnotations as TraitAnnotationFile | TraitAnnotation[] | undefined;
+  const traitAnnotations = Array.isArray(traitAnnotationFile)
+    ? traitAnnotationFile
+    : traitAnnotationFile?.traits ?? [];
 
   const tokensById = new Map(tokens.map((token) => [token.token_id, token]));
   const tokensByNumber = new Map(tokens.map((token) => [token.tokenNumber, token]));
@@ -235,6 +252,9 @@ export async function loadCollection(slug: string): Promise<CollectionData> {
     });
   const traitSupportByPropertyId = new Map(
     traitSupport.map((item) => [item.property_id, item]),
+  );
+  const traitAnnotationsByPropertyId = new Map(
+    traitAnnotations.map((item) => [item.property_id, item]),
   );
 
   return {
@@ -261,6 +281,8 @@ export async function loadCollection(slug: string): Promise<CollectionData> {
     tokenBidsByTokenId,
     traitSupport,
     traitSupportByPropertyId,
+    traitAnnotations,
+    traitAnnotationsByPropertyId,
   };
 }
 

@@ -15,7 +15,7 @@ test("captures required Fidenza screenshots", async ({ page }) => {
   await expect(page.getByText(/sales \d+/i)).toBeVisible();
   await expect(page.getByText(/asks \d+/i)).toBeVisible();
   await expect(page.getByText(/bids \d+/i)).toBeVisible();
-  await expect(page.getByText(/bid markers use active bid start times/i)).toBeVisible();
+  await expect(page.getByText(/price axis in Ξ/i)).toBeVisible();
   await expect(page.getByText(/token spotlight/i)).toBeVisible();
   await page.screenshot({
     fullPage: true,

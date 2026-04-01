@@ -169,6 +169,21 @@ export type TraitSupport = {
   ask_floor_eth?: number;
 };
 
+export type TraitAnnotationClass = "Positive" | "Neutral" | "Grail" | "Negative";
+export type TraitDriverTier = "Major" | "Supporting" | "Not";
+
+export type TraitAnnotation = {
+  property_id: number;
+  class?: TraitAnnotationClass;
+  driver_tier?: TraitDriverTier;
+  note?: string;
+};
+
+export type TraitAnnotationFile = {
+  version: 1;
+  traits: TraitAnnotation[];
+};
+
 export type CollectionData = {
   summary: CollectionSummary;
   metadata: CollectionMetadata;
@@ -185,6 +200,8 @@ export type CollectionData = {
   tokenBidsByTokenId: Map<number, Bid[]>;
   traitSupport: TraitSupport[];
   traitSupportByPropertyId: Map<number, TraitSupport>;
+  traitAnnotations: TraitAnnotation[];
+  traitAnnotationsByPropertyId: Map<number, TraitAnnotation>;
 };
 
 export type CombinedTraitMetrics = {
