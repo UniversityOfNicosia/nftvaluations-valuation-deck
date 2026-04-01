@@ -31,8 +31,6 @@ import {
   getDefaultTraitSelection,
   getActivityMarketType,
   getTokenActivityHistory,
-  getTopCollectionBids,
-  getTopTokenBids,
   getVisibleTraits,
   summarizeMarketBand,
 } from "./lib/derive.ts";
@@ -58,7 +56,9 @@ type RouteState =
 
 type TimelineScope = "token" | "neighborhood" | "aggregate";
 type TimelineRange = "1m" | "3m" | "1y" | "all";
+type ContextDeltaWindow = "1d" | "1w" | "1m" | "3m" | "6m" | "1y";
 type NeighborhoodSizeOption = 10 | 20 | 50 | 100 | "max";
+type TimelineSeriesKey = "sale" | "ask" | "bid" | "private";
 type TimelineAggregateBucket = {
   bucketId: string;
   kind: "aggregate";
@@ -112,8 +112,17 @@ const timelineRangeOptions: Array<{ label: string; value: TimelineRange }> = [
   { label: "1y", value: "1y" },
   { label: "All", value: "all" },
 ];
+const contextDeltaOptions: Array<{ label: string; value: ContextDeltaWindow }> = [
+  { label: "1d", value: "1d" },
+  { label: "1w", value: "1w" },
+  { label: "1m", value: "1m" },
+  { label: "3m", value: "3m" },
+  { label: "6m", value: "6m" },
+  { label: "1y", value: "1y" },
+];
 const neighborhoodSizeOptions: NeighborhoodSizeOption[] = [10, 20, 50, 100, "max"];
 const traitPreviewCount = 6;
+const defaultMinBidEth = 0.001;
 const artworkConfigBySlug: Record<string, ArtworkConfig> = {
   "fidenza-by-tyler-hobbs": {
     chainId: 1,
@@ -142,6 +151,20 @@ function parseRoute(): RouteState {
 function updateRoute(slug: string, params: URLSearchParams) {
   const query = params.toString();
   window.location.hash = `/collections/${slug}${query ? `?${query}` : ""}`;
+}
+
+function getStoredNumber(key: string, fallback: number) {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  const stored = window.localStorage.getItem(key);
+  if (!stored) {
+    return fallback;
+  }
+
+  const parsed = Number(stored);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function getReferenceTimestamp(collection: CollectionData) {
@@ -241,10 +264,12 @@ function buildTimelineBidEntries(
   bids: Bid[],
   cutoffTimestamp: number,
   bidScope: "token" | "collection",
+  minBidEth = 0,
 ) {
   return bids
     .filter((bid) => bid.status === "ACTIVE" && bid.is_active !== false)
     .filter((bid) => bid.start_ts >= cutoffTimestamp)
+    .filter((bid) => (bid.price_eth ?? 0) >= minBidEth)
     .map<TimelineBidEntry>((bid) => ({
       entryType: "bid",
       bidId: bid.bid_id,
@@ -325,6 +350,16 @@ function getTimelineEntrySemantic(entry: TimelineEntry) {
     return "bid" as const;
   }
   return getActivityMarketType(entry) ?? "sale";
+}
+
+function getTimelineSeriesKey(entry: TimelineEntry): TimelineSeriesKey {
+  if (isTimelineBidEntry(entry)) {
+    return "bid";
+  }
+  if (!isAggregateTimelineEntry(entry) && (entry.is_private || entry.kind.includes("private"))) {
+    return "private";
+  }
+  return getActivityMarketType(entry) === "ask" ? "ask" : "sale";
 }
 
 function buildLinearTicks(min: number, max: number, count: number) {
@@ -411,6 +446,90 @@ function formatSignedPercent(value: number | undefined, digits = 1) {
   }).format(normalized)}%`;
 }
 
+function getContextWindowSeconds(window: ContextDeltaWindow) {
+  const day = 24 * 60 * 60;
+  switch (window) {
+    case "1d":
+      return day;
+    case "1w":
+      return 7 * day;
+    case "1m":
+      return 30 * day;
+    case "3m":
+      return 90 * day;
+    case "6m":
+      return 180 * day;
+    case "1y":
+    default:
+      return 365 * day;
+  }
+}
+
+function getFloorDeltaForWindow(
+  context: CollectionData["context"],
+  window: ContextDeltaWindow,
+) {
+  switch (window) {
+    case "1d":
+      return context.change_floor_pct_1d;
+    case "1w":
+      return context.change_floor_pct_7d;
+    case "1m":
+      return context.change_floor_pct_30d;
+    case "3m":
+      return context.change_floor_pct_90d;
+    case "6m":
+      return context.change_floor_pct_180d;
+    case "1y":
+    default:
+      return context.change_floor_pct_365d;
+  }
+}
+
+function getSnapshotAtOrBefore(
+  snapshots: CollectionData["snapshots"],
+  timestamp: number,
+) {
+  let candidate = snapshots[0];
+  snapshots.forEach((snapshot) => {
+    if (snapshot.timestamp <= timestamp) {
+      candidate = snapshot;
+    }
+  });
+  return candidate;
+}
+
+function getListedPctFromSnapshot(snapshot: CollectionData["snapshots"][number] | undefined) {
+  if (!snapshot || snapshot.listing_count === undefined || !snapshot.token_count) {
+    return undefined;
+  }
+  return snapshot.listing_count / snapshot.token_count;
+}
+
+function deriveListedDelta(
+  collection: CollectionData,
+  window: ContextDeltaWindow,
+  referenceTimestamp: number,
+) {
+  const currentListedPct =
+    collection.context.listed_pct ??
+    getListedPctFromSnapshot(collection.snapshots[collection.snapshots.length - 1]);
+  if (currentListedPct === undefined) {
+    return undefined;
+  }
+
+  const priorSnapshot = getSnapshotAtOrBefore(
+    collection.snapshots,
+    referenceTimestamp - getContextWindowSeconds(window),
+  );
+  const priorListedPct = getListedPctFromSnapshot(priorSnapshot);
+  if (priorListedPct === undefined || priorListedPct === 0) {
+    return undefined;
+  }
+
+  return (currentListedPct - priorListedPct) / priorListedPct;
+}
+
 function getChangeTone(value: number | undefined) {
   if (value === undefined || value === 0) {
     return "neutral";
@@ -455,10 +574,15 @@ function getTraitRowClasses(collection: CollectionData, propertyId: number, sele
   );
 }
 
-function getCollectionContextRows(collection: CollectionData, valueMode: ValueMode) {
+function getCollectionContextRows(
+  collection: CollectionData,
+  valueMode: ValueMode,
+  window: ContextDeltaWindow,
+  referenceTimestamp: number,
+) {
   return [
     {
-      change: collection.context.change_floor_pct_30d,
+      change: getFloorDeltaForWindow(collection.context, window),
       label: "Floor",
       value: formatValue(
         collection.context.floor_eth,
@@ -468,7 +592,8 @@ function getCollectionContextRows(collection: CollectionData, valueMode: ValueMo
       ),
     },
     {
-      change: collection.context.change_median_sale_30d_vs_prev30d_pct,
+      change:
+        window === "1m" ? collection.context.change_median_sale_30d_vs_prev30d_pct : undefined,
       label: "30d median",
       value: formatValue(
         collection.context.median_sale_eth_30d,
@@ -488,7 +613,7 @@ function getCollectionContextRows(collection: CollectionData, valueMode: ValueMo
       ),
     },
     {
-      change: undefined,
+      change: deriveListedDelta(collection, window, referenceTimestamp),
       label: "Listed",
       value: formatPercent(collection.context.listed_pct),
     },
@@ -783,6 +908,9 @@ function Workbench({
 }) {
   const initialTokenNumber = Number(route.params.get("token") ?? 239);
   const [valueMode, setValueMode] = useState<ValueMode>("eth-usd");
+  const [minBidEth, setMinBidEth] = useState<number>(() =>
+    getStoredNumber("valuation.minBidEth", defaultMinBidEth),
+  );
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
 
@@ -804,6 +932,10 @@ function Workbench({
       onNavigate(params);
     }
   }, [onNavigate, route.params, selectedToken.tokenNumber]);
+
+  useEffect(() => {
+    window.localStorage.setItem("valuation.minBidEth", String(minBidEth));
+  }, [minBidEth]);
 
   const filteredTokens = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
@@ -835,16 +967,21 @@ function Workbench({
   return (
     <main className="workbench-shell">
       <header className="workbench-header">
-        <div className="header-copy-block">
+        <div className="header-primary">
           <button className="back-link" onClick={() => (window.location.hash = "/")} type="button">
             Collection index
           </button>
-          <p className="eyebrow">{collection.summary.artist}</p>
-          <h1>{collection.summary.title} valuation workbench</h1>
-          <p className="hero-copy">
-            Token art, local market evidence, and trait-driven comp context in one compact
-            review surface.
-          </p>
+          <div className="header-copy-block">
+            <p className="eyebrow">{collection.summary.artist}</p>
+            <h1>{collection.summary.title}</h1>
+          </div>
+          <TokenJumpControl
+            filteredTokens={filteredTokens}
+            onChange={setSearch}
+            onSubmit={handleTokenJump}
+            search={search}
+            selectedToken={selectedToken}
+          />
         </div>
         <div className="header-actions">
           <div className="header-kpis">
@@ -877,13 +1014,7 @@ function Workbench({
             />
           </div>
           <div className="header-toolbar">
-            <TokenJumpControl
-              filteredTokens={filteredTokens}
-              onChange={setSearch}
-              onSubmit={handleTokenJump}
-              search={search}
-              selectedToken={selectedToken}
-            />
+            <BidFloorControl minBidEth={minBidEth} onChange={setMinBidEth} />
             <ValueModeToggle valueMode={valueMode} onChange={setValueMode} />
           </div>
         </div>
@@ -906,10 +1037,10 @@ function Workbench({
           }}
           onNeighborhoodModeChange={(mode) => {
             const params = new URLSearchParams(route.params);
-            params.set("panel", "neighborhood");
             params.set("mode", mode);
             onNavigate(params);
           }}
+          minBidEth={minBidEth}
           onSelectToken={handleSelectToken}
           selectedToken={selectedToken}
           valueMode={valueMode}
@@ -922,6 +1053,7 @@ function Workbench({
 function TokenWorkbenchPanels({
   activeView,
   collection,
+  minBidEth,
   neighborhoodMode,
   onActiveViewChange,
   onNeighborhoodModeChange,
@@ -931,6 +1063,7 @@ function TokenWorkbenchPanels({
 }: {
   activeView: "timeline" | "neighborhood";
   collection: CollectionData;
+  minBidEth: number;
   neighborhoodMode: NeighborhoodMode;
   onActiveViewChange: (view: "timeline" | "neighborhood") => void;
   onNeighborhoodModeChange: (mode: NeighborhoodMode) => void;
@@ -939,12 +1072,32 @@ function TokenWorkbenchPanels({
   valueMode: ValueMode;
 }) {
   const visibleTraits = getVisibleTraits(collection, selectedToken.token_id);
-  const primaryTraitRows = getPrimaryTraitRows(collection, visibleTraits);
-  const collectionContextRows = getCollectionContextRows(collection, valueMode);
-  const tokenBids = getTopTokenBids(collection, selectedToken.token_id);
-  const collectionBids = getTopCollectionBids(collection);
-  const marketBand = summarizeMarketBand(selectedToken, tokenBids);
   const referenceTimestamp = getReferenceTimestamp(collection);
+  const [contextWindow, setContextWindow] = useState<ContextDeltaWindow>("1m");
+  const primaryTraitRows = getPrimaryTraitRows(collection, visibleTraits);
+  const collectionContextRows = getCollectionContextRows(
+    collection,
+    valueMode,
+    contextWindow,
+    referenceTimestamp,
+  );
+  const tokenBids = useMemo(
+    () =>
+      (collection.tokenBidsByTokenId.get(selectedToken.token_id) ?? [])
+        .filter((bid) => bid.status === "ACTIVE" && bid.is_active !== false)
+        .filter((bid) => (bid.price_eth ?? 0) >= minBidEth)
+        .slice(0, 6),
+    [collection.tokenBidsByTokenId, minBidEth, selectedToken.token_id],
+  );
+  const collectionBids = useMemo(
+    () =>
+      collection.collectionBids
+        .filter((bid) => bid.status === "ACTIVE" && bid.is_active !== false)
+        .filter((bid) => (bid.price_eth ?? 0) >= minBidEth)
+        .slice(0, 6),
+    [collection.collectionBids, minBidEth],
+  );
+  const marketBand = summarizeMarketBand(selectedToken, tokenBids);
   const allTokenActivity = getTokenActivityHistory(collection, selectedToken.token_id);
   const [timelineScope, setTimelineScope] = useState<TimelineScope>("token");
   const [timelineRange, setTimelineRange] = useState<TimelineRange>("1y");
@@ -954,7 +1107,7 @@ function TokenWorkbenchPanels({
     getInitialTraitSelection(collection, visibleTraits),
   );
   const [inspectedTimelineKey, setInspectedTimelineKey] = useState<string | undefined>();
-  const allNeighbors = deriveNeighbors(collection, selectedToken, neighborhoodMode);
+  const allNeighbors = deriveNeighbors(collection, selectedToken, neighborhoodMode, activeTraits);
   const visibleNeighbors = useMemo(() => {
     if (neighborhoodSize === "max") {
       return allNeighbors;
@@ -976,6 +1129,7 @@ function TokenWorkbenchPanels({
       collection.tokenBidsByTokenId.get(selectedToken.token_id) ?? [],
       cutoffTimestamp,
       "token",
+      minBidEth,
     );
     const neighborhoodTokenIds = new Set([
       selectedToken.token_id,
@@ -991,6 +1145,7 @@ function TokenWorkbenchPanels({
           collection.tokenBidsByTokenId.get(tokenId) ?? [],
           cutoffTimestamp,
           "token",
+          minBidEth,
         ),
       )
       .sort((left, right) => right.timestamp - left.timestamp);
@@ -1004,6 +1159,7 @@ function TokenWorkbenchPanels({
       collection.collectionBids,
       cutoffTimestamp,
       "collection",
+      minBidEth,
     );
 
     const entries: TimelineEntry[] =
@@ -1034,6 +1190,7 @@ function TokenWorkbenchPanels({
     collection.activities,
     collection.collectionBids,
     collection.tokenBidsByTokenId,
+    minBidEth,
     referenceTimestamp,
     selectedToken.token_id,
     timelineRange,
@@ -1046,14 +1203,6 @@ function TokenWorkbenchPanels({
   const inspectedNeighbor =
     visibleNeighbors.find((neighbor) => neighbor.token.token_id === inspectedNeighborId) ??
     visibleNeighbors[0];
-  const matchingNeighborhoodTokens = useMemo(() => {
-    const visibleNeighborNumbers = new Set(
-      visibleNeighbors.map((neighbor) => neighbor.token.tokenNumber),
-    );
-    return (combinedTraits?.matchedTokenNumbers ?? []).filter((tokenNumber) =>
-      visibleNeighborNumbers.has(tokenNumber),
-    );
-  }, [combinedTraits, visibleNeighbors]);
   const tokenSignals = useMemo(
     () =>
       buildTokenSignals(
@@ -1067,6 +1216,24 @@ function TokenWorkbenchPanels({
   const selectedTokenUrl = getTokenExternalUrl(
     collection.summary.slug,
     selectedToken.token_index,
+  );
+  const neighborRelevance = useMemo(
+    () =>
+      new Map(
+        visibleNeighbors.map((neighbor, index) => [
+          neighbor.token.token_id,
+          Math.max(0.2, (visibleNeighbors.length - index) / visibleNeighbors.length),
+        ]),
+      ),
+    [visibleNeighbors],
+  );
+  const matchedTokens = useMemo(
+    () =>
+      (combinedTraits?.matchedTokenNumbers ?? [])
+        .map((tokenNumber) => collection.tokensByNumber.get(tokenNumber))
+        .filter((token): token is TokenWithNumber => token !== undefined)
+        .slice(0, 12),
+    [collection.tokensByNumber, combinedTraits?.matchedTokenNumbers],
   );
 
   return (
@@ -1106,55 +1273,52 @@ function TokenWorkbenchPanels({
                 {selectedRarityBucket?.label ?? "Rarity pending"}
               </span>
             </div>
+            <TokenEvidenceRail
+              collectionBidEth={collection.context.top_bid_eth}
+              ethUsd={collection.metadata.eth_usd}
+              modelEth={selectedToken.prediction_eth}
+              selectedToken={selectedToken}
+              tokenBidEth={marketBand.topBidEth}
+              valueMode={valueMode}
+            />
             <div className="token-pill-list">
               {tokenSignals.map((signal) => (
                 <SignalPill key={signal.label} label={signal.label} tone={signal.tone} />
               ))}
             </div>
-            <div className="market-band">
+            <div className="token-evidence-strip">
               <Metric
-                label="Current ask"
+                label="Ask"
+                note={selectedToken.current_ask_eth ? "Live" : "None"}
                 value={formatValue(
                   selectedToken.current_ask_eth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
                 )}
-                note={selectedToken.current_ask_eth ? "Live ask" : "No live ask"}
               />
               <Metric
                 label="Last sale"
+                note={formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}
                 value={formatValue(
                   selectedToken.last_single_sale_eth,
                   selectedToken.last_single_sale_usd,
                   collection.metadata.eth_usd,
                   valueMode,
                 )}
-                note={formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}
               />
               <Metric
-                label="Top token bid"
+                label="Best bid"
+                note={marketBand.topBidEth ? "Token" : "Collection"}
                 value={formatValue(
-                  marketBand.topBidEth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-                note={marketBand.topBidEth ? "Active token support" : "No live token bid"}
-              />
-            </div>
-            <div className="token-summary-grid">
-              <Metric
-                label="Adjusted floor"
-                value={formatValue(
-                  selectedToken.adjusted_floor_eth,
+                  marketBand.topBidEth ?? collection.context.top_bid_eth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
                 )}
               />
               <Metric
-                label="Model output"
+                label="Model"
                 value={formatValue(
                   selectedToken.prediction_eth,
                   undefined,
@@ -1162,15 +1326,6 @@ function TokenWorkbenchPanels({
                   valueMode,
                 )}
               />
-              <Metric
-                label="Rarity rank"
-                value={
-                  selectedToken.rarity_rank
-                    ? `${selectedToken.rarity_rank} / ${collection.tokens.length}`
-                    : "N/A"
-                }
-              />
-              <Metric label="Minted" value={formatDate(selectedToken.mint_ts)} />
             </div>
           </div>
         </section>
@@ -1181,7 +1336,7 @@ function TokenWorkbenchPanels({
               <p className="eyebrow">Collection context</p>
               <h2>Compact context rows</h2>
             </div>
-            <span className="pill muted">Context, not verdict</span>
+            <ContextDeltaToggle onChange={setContextWindow} value={contextWindow} />
           </div>
           <div className="context-table">
             <div className="context-table-head">
@@ -1199,6 +1354,92 @@ function TokenWorkbenchPanels({
               </div>
             ))}
           </div>
+          <p className="footnote">
+            Floor delta follows the selected window. Listed delta is derived from snapshot
+            history when available. Top bid and rolling volume still need historical series
+            in the current collection JSON.
+          </p>
+        </section>
+
+        <section className="panel inspector-card">
+          <div className="section-head">
+            <div>
+              <p className="eyebrow">Decision synthesis</p>
+              <h2>Compact frame</h2>
+            </div>
+          </div>
+          <div className="decision-grid">
+            <DecisionCard
+              notes={[
+                `Token ${formatValue(
+                  marketBand.topBidEth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+                `Collection ${formatValue(
+                  collection.context.top_bid_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+              ]}
+              title="Support"
+              tone="bid"
+              value={formatValue(
+                marketBand.topBidEth ?? collection.context.top_bid_eth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+            <DecisionCard
+              notes={[
+                `Model ${formatValue(
+                  selectedToken.prediction_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+                `Floor ${formatValue(
+                  selectedToken.adjusted_floor_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+              ]}
+              title="Working value"
+              tone="fair"
+              value={formatValue(
+                marketBand.fairEth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+          </div>
+        </section>
+
+        <section className="panel inspector-card bids-card">
+          <div className="section-head">
+            <div>
+              <p className="eyebrow">Active bids</p>
+              <h2>Filtered support</h2>
+            </div>
+            <span className="pill muted">Floor {formatValue(minBidEth, undefined, 1, "eth")}</span>
+          </div>
+          <BidList
+            bids={tokenBids}
+            ethUsd={collection.metadata.eth_usd}
+            title="Token bids"
+            valueMode={valueMode}
+          />
+          <BidList
+            bids={collectionBids}
+            ethUsd={collection.metadata.eth_usd}
+            title="Collection bids"
+            valueMode={valueMode}
+          />
         </section>
       </aside>
 
@@ -1237,11 +1478,13 @@ function TokenWorkbenchPanels({
               neighborhoodMode={neighborhoodMode}
               neighborhoodSize={neighborhoodSize}
               neighborhoodShownCount={visibleNeighbors.length}
+              neighborRelevance={neighborRelevance}
               onNeighborhoodModeChange={onNeighborhoodModeChange}
               onNeighborhoodSizeChange={setNeighborhoodSize}
               onInspect={(entry) => setInspectedTimelineKey(getTimelineEntryKey(entry))}
               onRangeChange={setTimelineRange}
               onScopeChange={setTimelineScope}
+              selectedTokenId={selectedToken.token_id}
               range={timelineRange}
               scope={timelineScope}
               totalNeighborCount={allNeighbors.length}
@@ -1257,6 +1500,7 @@ function TokenWorkbenchPanels({
               onInspect={(neighbor) => setInspectedNeighborId(neighbor.token.token_id)}
               onModeChange={onNeighborhoodModeChange}
               onSizeChange={setNeighborhoodSize}
+              selectedTraitCount={activeTraits.length}
               selectedToken={selectedToken}
               shownCount={visibleNeighbors.length}
               size={neighborhoodSize}
@@ -1278,7 +1522,7 @@ function TokenWorkbenchPanels({
             <div className="trait-table-head">
               <span>Select</span>
               <span>Trait</span>
-              <span>Support</span>
+              <span>Share</span>
               <span>Ask floor</span>
               <span>Latest clean sale</span>
               <span>Median 30d</span>
@@ -1327,6 +1571,12 @@ function TokenWorkbenchPanels({
                         collection.metadata.eth_usd,
                         valueMode,
                       )}
+                      {support?.latest_clean_sale_ts ? (
+                        <small className="age-pill">
+                          {formatRelativeAge(support.latest_clean_sale_ts, referenceTimestamp)
+                            .replace(" ago", "")}
+                        </small>
+                      ) : null}
                     </span>
                     <span>
                       {formatValue(
@@ -1363,245 +1613,77 @@ function TokenWorkbenchPanels({
               </span>
             ) : null}
           </div>
-          <div className="combined-trait-card">
-            <div className="section-head">
-              <div>
-                <p className="eyebrow">Combined traits</p>
-                <h3>
-                  {activeTraits.length >= 2
-                    ? `${activeTraits.length} selected traits`
-                    : "Select 2+ rows to compare overlap"}
-                </h3>
+          {combinedTraits && activeTraits.length >= 2 ? (
+            <>
+              <div className="trait-combined-row">
+                <span className="trait-check combined">+</span>
+                <span className="trait-copy">
+                  <strong>Combined traits</strong>
+                  <small>
+                    {selectedTraitRows.map((trait) => trait.property_name).join(" + ")}
+                  </small>
+                </span>
+                <span>{formatPercent(combinedTraits.matchedTokenShare)}</span>
+                <span>
+                  {formatValue(
+                    combinedTraits.askFloorEth,
+                    undefined,
+                    collection.metadata.eth_usd,
+                    valueMode,
+                  )}
+                </span>
+                <span>
+                  {formatValue(
+                    combinedTraits.latestSaleEth,
+                    combinedTraits.latestSaleUsd,
+                    collection.metadata.eth_usd,
+                    valueMode,
+                  )}
+                </span>
+                <span>
+                  {formatValue(
+                    combinedTraits.combinedMedianEth,
+                    undefined,
+                    collection.metadata.eth_usd,
+                    valueMode,
+                  )}
+                </span>
               </div>
-              <span className="pill muted">
-                {selectedTraitRows.slice(0, 2).map((trait) => trait.property_name).join(" + ") ||
-                  "Local intersections"}
-              </span>
-            </div>
-            {combinedTraits && activeTraits.length >= 2 ? (
-              combinedTraits.matchedTokenCount > 0 ? (
-                <>
-                  <div className="context-grid">
-                    <Metric
-                      label="Combined support"
-                      value={`${combinedTraits.matchedTokenCount} / ${collection.tokens.length}`}
-                    />
-                    <Metric
-                      label="Share"
-                      value={formatPercent(combinedTraits.matchedTokenShare)}
-                    />
-                    <Metric
-                      label="Combined median"
-                      value={formatValue(
-                        combinedTraits.combinedMedianEth,
-                        undefined,
-                        collection.metadata.eth_usd,
-                        valueMode,
-                      )}
-                    />
-                    <Metric
-                      label="Latest sale"
-                      value={formatValue(
-                        combinedTraits.latestSaleEth,
-                        combinedTraits.latestSaleUsd,
-                        collection.metadata.eth_usd,
-                        valueMode,
-                      )}
-                    />
-                    <Metric
-                      label="Latest sale age"
-                      value={formatRelativeAge(
-                        combinedTraits.latestSaleTs,
-                        referenceTimestamp,
-                      )}
-                    />
-                    <Metric
-                      label="Ask / floor"
-                      value={`${formatValue(
-                        combinedTraits.askFloorEth,
-                        undefined,
-                        collection.metadata.eth_usd,
-                        valueMode,
-                      )} / ${formatValue(
-                        combinedTraits.floorReferenceEth,
-                        undefined,
-                        collection.metadata.eth_usd,
-                        valueMode,
-                      )}`}
-                    />
-                  </div>
-                  <div className="combined-token-strip">
-                    <div>
-                      <p className="eyebrow">Matching neighborhood tokens</p>
-                      <p className="footnote">
-                        Intersections use current local neighborhood results only, without trait-bid
-                        weighting.
-                      </p>
-                    </div>
-                    <div className="token-pill-list">
-                      {matchingNeighborhoodTokens.length > 0 ? (
-                        matchingNeighborhoodTokens.slice(0, 12).map((tokenNumber) => (
-                          <button
-                            key={tokenNumber}
-                            className="token-pill"
-                            onClick={() => onSelectToken(tokenNumber)}
-                            type="button"
-                          >
-                            {formatTokenNumber(tokenNumber)}
-                          </button>
-                        ))
-                      ) : (
-                        <span className="pill muted">No current neighborhood overlap</span>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <p className="footnote">
-                  No current overlap beyond the selected token. The box stays conservative
-                  and reports the exact local intersection result instead of inventing
-                  synthetic support.
-                </p>
-              )
-            ) : (
-              <p className="footnote">
-                Use the checkbox rows above to pick at least two visible traits. The combined box
-                summarizes overlap from matched local token records only.
-              </p>
-            )}
-          </div>
+              <div className="combined-token-strip">
+                {matchedTokens.length > 0 ? (
+                  matchedTokens.map((token) => (
+                    <button
+                      key={token.token_id}
+                      className="combined-token-card"
+                      onClick={() => onSelectToken(token.tokenNumber)}
+                      type="button"
+                    >
+                      <TokenThumbnail slug={collection.summary.slug} token={token} />
+                      <div className="combined-token-copy">
+                        <strong>{token.display_name}</strong>
+                        <small>
+                          {formatValue(
+                            token.current_ask_eth ?? token.last_single_sale_eth,
+                            token.last_single_sale_usd,
+                            collection.metadata.eth_usd,
+                            valueMode,
+                          )}
+                        </small>
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <span className="pill muted">No current overlap in local token records</span>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="footnote">
+              Select at least two rows to see their intersection and matching tokens.
+            </p>
+          )}
         </section>
       </section>
-
-      <aside className="right-column">
-        <section className="panel inspector-card">
-          <div className="section-head">
-            <div>
-              <p className="eyebrow">Inspector</p>
-              <h2>{activeView === "timeline" ? "Selected market event" : "Selected neighbor"}</h2>
-            </div>
-          </div>
-          {activeView === "timeline" && inspectedTimelineEntry ? (
-            <TimelineInspector
-              activity={inspectedTimelineEntry}
-              collection={collection}
-              ethUsd={collection.metadata.eth_usd}
-              referenceTimestamp={referenceTimestamp}
-              valueMode={valueMode}
-            />
-          ) : null}
-          {activeView === "neighborhood" && inspectedNeighbor ? (
-            <NeighborInspector
-              collectionSlug={collection.summary.slug}
-              ethUsd={collection.metadata.eth_usd}
-              neighbor={inspectedNeighbor}
-              valueMode={valueMode}
-            />
-          ) : null}
-        </section>
-
-        <section className="panel inspector-card">
-          <div className="section-head">
-            <div>
-              <p className="eyebrow">Decision synthesis</p>
-              <h2>Bid, fair, and list frame</h2>
-            </div>
-          </div>
-          <div className="decision-grid">
-            <DecisionCard
-              notes={[
-                `Token support ${formatValue(
-                  marketBand.topBidEth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Collection support ${formatValue(
-                  collection.context.top_bid_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Last sale ${formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}`,
-              ]}
-              title="Bid-side"
-              tone="bid"
-              value={formatValue(
-                marketBand.topBidEth ?? collection.context.top_bid_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <DecisionCard
-              notes={[
-                `Model ${formatValue(
-                  selectedToken.prediction_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Adjusted floor ${formatValue(
-                  selectedToken.adjusted_floor_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Rarity ${selectedRarityBucket?.label ?? "N/A"}`,
-              ]}
-              title="Fair value"
-              tone="fair"
-              value={formatValue(
-                marketBand.fairEth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <DecisionCard
-              notes={[
-                `Current ask ${formatValue(
-                  selectedToken.current_ask_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Neighborhood set ${visibleNeighbors.length} comps`,
-                `${activeTraits.length} active trait rows`,
-              ]}
-              title="List-side"
-              tone="list"
-              value={formatValue(
-                marketBand.listEth ?? selectedToken.current_ask_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-          </div>
-        </section>
-
-        <section className="panel inspector-card bids-card">
-          <div className="section-head">
-            <div>
-              <p className="eyebrow">Active bids</p>
-              <h2>Collection and token support</h2>
-            </div>
-          </div>
-          <BidList
-            bids={tokenBids}
-            ethUsd={collection.metadata.eth_usd}
-            title="Token bids"
-            valueMode={valueMode}
-          />
-          <BidList
-            bids={collectionBids}
-            ethUsd={collection.metadata.eth_usd}
-            title="Collection bids"
-            valueMode={valueMode}
-          />
-        </section>
-      </aside>
     </>
   );
 }
@@ -1652,13 +1734,20 @@ function TokenArtwork({
 }) {
   const [failed, setFailed] = useState(false);
   const src = getTokenImageUrl(slug, token.token_index);
+  const externalUrl = getTokenExternalUrl(slug, token.token_index);
 
   if (!src || failed) {
     return <TokenFallback rarityBucket={rarityBucket} token={token} />;
   }
 
   return (
-    <div className="token-artwork-frame">
+    <a
+      className="token-artwork-frame"
+      href={externalUrl ?? src}
+      rel="noreferrer"
+      target="_blank"
+      title="Open full-resolution artwork"
+    >
       <img
         alt={alt}
         className="token-artwork"
@@ -1666,7 +1755,8 @@ function TokenArtwork({
         onError={() => setFailed(true)}
         src={src}
       />
-    </div>
+      <span className="token-artwork-hint">Full image</span>
+    </a>
   );
 }
 
@@ -1693,6 +1783,136 @@ function TokenThumbnail({
         onError={() => setFailed(true)}
         src={src}
       />
+    </div>
+  );
+}
+
+function ContextDeltaToggle({
+  onChange,
+  value,
+}: {
+  onChange: (value: ContextDeltaWindow) => void;
+  value: ContextDeltaWindow;
+}) {
+  return (
+    <div className="segmented-control compact">
+      {contextDeltaOptions.map((option) => (
+        <button
+          key={option.value}
+          className={value === option.value ? "selected" : ""}
+          onClick={() => onChange(option.value)}
+          type="button"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function BidFloorControl({
+  minBidEth,
+  onChange,
+}: {
+  minBidEth: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="bid-floor-control">
+      <span>Min bid</span>
+      <input
+        min="0"
+        onChange={(event) => {
+          const nextValue = Number(event.target.value);
+          onChange(Number.isFinite(nextValue) ? nextValue : 0);
+        }}
+        step="0.001"
+        type="number"
+        value={String(minBidEth)}
+      />
+      <small>Ξ</small>
+    </label>
+  );
+}
+
+function TokenEvidenceRail({
+  collectionBidEth,
+  ethUsd,
+  modelEth,
+  selectedToken,
+  tokenBidEth,
+  valueMode,
+}: {
+  collectionBidEth?: number;
+  ethUsd: number;
+  modelEth?: number;
+  selectedToken: TokenWithNumber;
+  tokenBidEth?: number;
+  valueMode: ValueMode;
+}) {
+  const markers = [
+    {
+      id: "support",
+      label: tokenBidEth !== undefined ? "Token bid" : "Collection bid",
+      tone: "support",
+      value: tokenBidEth ?? collectionBidEth,
+    },
+    {
+      id: "floor",
+      label: "Adj. floor",
+      tone: "floor",
+      value: selectedToken.adjusted_floor_eth,
+    },
+    {
+      id: "model",
+      label: "Model",
+      tone: "model",
+      value: modelEth,
+    },
+    {
+      id: "sale",
+      label: "Last sale",
+      tone: "sale",
+      value: selectedToken.last_single_sale_eth,
+    },
+    {
+      id: "ask",
+      label: "Ask",
+      tone: "ask",
+      value: selectedToken.current_ask_eth,
+    },
+  ].filter(
+    (marker): marker is { id: string; label: string; tone: string; value: number } =>
+      typeof marker.value === "number" && Number.isFinite(marker.value),
+  );
+
+  if (markers.length === 0) {
+    return null;
+  }
+
+  const minValue = Math.min(...markers.map((marker) => marker.value));
+  const maxValue = Math.max(...markers.map((marker) => marker.value));
+  const spread = Math.max(maxValue - minValue, 0.001);
+
+  return (
+    <div className="token-evidence-rail">
+      <div className="token-evidence-track" />
+      {markers.map((marker, index) => {
+        const left = ((marker.value - minValue) / spread) * 100;
+        return (
+          <div
+            className={`token-evidence-marker ${marker.tone} ${index % 2 === 0 ? "high" : "low"}`}
+            key={marker.id}
+            style={{ left: `${left}%` }}
+          >
+            <span className="token-evidence-dot" />
+            <div className="token-evidence-label">
+              <strong>{marker.label}</strong>
+              <small>{formatValue(marker.value, undefined, ethUsd, valueMode)}</small>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1884,6 +2104,7 @@ function TimelinePanel({
   ethUsd,
   inspectedEntry,
   legend,
+  neighborRelevance,
   neighborhoodMode,
   neighborhoodSize,
   neighborhoodShownCount,
@@ -1894,6 +2115,7 @@ function TimelinePanel({
   onScopeChange,
   range,
   scope,
+  selectedTokenId,
   totalNeighborCount,
   valueMode,
 }: {
@@ -1902,6 +2124,7 @@ function TimelinePanel({
   ethUsd: number;
   inspectedEntry?: TimelineEntry;
   legend: TimelineLegend;
+  neighborRelevance: Map<number, number>;
   neighborhoodMode: NeighborhoodMode;
   neighborhoodSize: NeighborhoodSizeOption;
   neighborhoodShownCount: number;
@@ -1912,10 +2135,26 @@ function TimelinePanel({
   onScopeChange: (scope: TimelineScope) => void;
   range: TimelineRange;
   scope: TimelineScope;
+  selectedTokenId: number;
   totalNeighborCount: number;
   valueMode: ValueMode;
 }) {
-  const chartEntries = [...entries].sort((left, right) => left.timestamp - right.timestamp);
+  const [hoveredEntryKey, setHoveredEntryKey] = useState<string | undefined>();
+  const [visibleSeries, setVisibleSeries] = useState<Record<TimelineSeriesKey, boolean>>({
+    sale: true,
+    ask: true,
+    bid: true,
+    private: true,
+  });
+  const filteredEntries = useMemo(
+    () =>
+      entries.filter((entry) => {
+        const series = getTimelineSeriesKey(entry);
+        return visibleSeries[series];
+      }),
+    [entries, visibleSeries],
+  );
+  const chartEntries = [...filteredEntries].sort((left, right) => left.timestamp - right.timestamp);
   const referenceValues = [
     collection.context.floor_eth,
     collection.context.median_sale_eth_30d,
@@ -1978,11 +2217,71 @@ function TimelinePanel({
     { label: "Visual", value: "visual", disabled: true },
     { label: "Curated", value: "curated", disabled: true },
   ];
+  const referenceTimestamp = getReferenceTimestamp(collection);
+  const seriesCounts: Record<TimelineSeriesKey, number> = {
+    sale: entries.filter((entry) => getTimelineSeriesKey(entry) === "sale").length,
+    ask: entries.filter((entry) => getTimelineSeriesKey(entry) === "ask").length,
+    bid: entries.filter((entry) => getTimelineSeriesKey(entry) === "bid").length,
+    private: entries.filter((entry) => getTimelineSeriesKey(entry) === "private").length,
+  };
+  const activeEntry =
+    filteredEntries.find((entry) => getTimelineEntryKey(entry) === hoveredEntryKey) ??
+    (inspectedEntry &&
+    filteredEntries.some(
+      (entry) => getTimelineEntryKey(entry) === getTimelineEntryKey(inspectedEntry),
+    )
+      ? inspectedEntry
+      : filteredEntries[0]);
+  const prioritizedEntries = [...filteredEntries].sort((left, right) => {
+    const leftTokenId = isTimelineBidEntry(left)
+      ? left.tokenId
+      : isAggregateTimelineEntry(left)
+        ? undefined
+        : left.token_id;
+    const rightTokenId = isTimelineBidEntry(right)
+      ? right.tokenId
+      : isAggregateTimelineEntry(right)
+        ? undefined
+        : right.token_id;
+    const leftPriority =
+      (leftTokenId === selectedTokenId ? 100 : 0) +
+      (getTimelineSeriesKey(left) === "sale" ? 40 : 0) +
+      (getTimelineSeriesKey(left) === "ask" ? 30 : 0) +
+      (neighborRelevance.get(leftTokenId ?? -1) ?? 0) * 20;
+    const rightPriority =
+      (rightTokenId === selectedTokenId ? 100 : 0) +
+      (getTimelineSeriesKey(right) === "sale" ? 40 : 0) +
+      (getTimelineSeriesKey(right) === "ask" ? 30 : 0) +
+      (neighborRelevance.get(rightTokenId ?? -1) ?? 0) * 20;
+    if (rightPriority !== leftPriority) {
+      return rightPriority - leftPriority;
+    }
+    return right.timestamp - left.timestamp;
+  });
+
+  function getEntryRelevance(entry: TimelineEntry) {
+    if (isAggregateTimelineEntry(entry)) {
+      return 0.72;
+    }
+    if (isTimelineBidEntry(entry)) {
+      if (entry.bidScope === "collection") {
+        return 0.62;
+      }
+      if (entry.tokenId === selectedTokenId) {
+        return 1;
+      }
+      return neighborRelevance.get(entry.tokenId ?? -1) ?? 0.35;
+    }
+    if (entry.token_id === selectedTokenId) {
+      return 1;
+    }
+    return neighborRelevance.get(entry.token_id) ?? 0.42;
+  }
 
   return (
     <section className="timeline-card">
       <div className="timeline-toolbar">
-        <div className="segmented-control wrap">
+        <div className="segmented-control wrap compact">
           {timelineScopeOptions.map((option) => (
             <button
               key={option.value}
@@ -1994,7 +2293,7 @@ function TimelinePanel({
             </button>
           ))}
         </div>
-        <div className="segmented-control wrap">
+        <div className="segmented-control wrap compact">
           {timelineRangeOptions.map((option) => (
             <button
               key={option.value}
@@ -2008,13 +2307,43 @@ function TimelinePanel({
         </div>
       </div>
       <div className="timeline-subhead">
-        <div className="timeline-legend">
-          <span className="legend-pill">Shown {legend.total}</span>
-          <span className="legend-pill sale">Sales {legend.saleCount}</span>
-          <span className="legend-pill ask">Asks {legend.askCount}</span>
-          <span className="legend-pill bid">Bids {legend.bidCount}</span>
-          <span className="legend-pill private">Private {legend.privateCount}</span>
+        <div className="timeline-legend toggles">
+          <span className="legend-pill">Shown {filteredEntries.length}</span>
+          {(["sale", "ask", "bid", "private"] as TimelineSeriesKey[]).map((series) => (
+            <button
+              key={series}
+              className={cx(
+                "legend-pill",
+                series,
+                visibleSeries[series] ? "selected" : "muted-off",
+              )}
+              onClick={() =>
+                setVisibleSeries((current) => ({
+                  ...current,
+                  [series]: !current[series],
+                }))
+              }
+              type="button"
+            >
+              {series} {seriesCounts[series]}
+            </button>
+          ))}
           <span className="legend-pill">Tokens {legend.tokenCount}</span>
+          {typeof floorReference === "number" ? (
+            <span className="legend-pill reference">
+              floor {formatTimelineAxisValue(floorReference)}
+            </span>
+          ) : null}
+          {typeof medianReference === "number" ? (
+            <span className="legend-pill reference">
+              30d median {formatTimelineAxisValue(medianReference)}
+            </span>
+          ) : null}
+          {typeof topBidReference === "number" ? (
+            <span className="legend-pill reference">
+              top bid {formatTimelineAxisValue(topBidReference)}
+            </span>
+          ) : null}
         </div>
         <p className="timeline-caption">{getTimelineScopeSummary(scope)}</p>
       </div>
@@ -2022,7 +2351,7 @@ function TimelinePanel({
         <div className="definition-box">
           <div className="definition-copy">
             <strong>Neighborhood definition</strong>
-            <small>These settings drive the current token + neighborhood evidence set.</small>
+            <small>These settings drive the evidence set without switching you away from timeline view.</small>
           </div>
           <div className="definition-actions">
             <div className="segmented-control wrap compact">
@@ -2061,9 +2390,23 @@ function TimelinePanel({
           <strong>No priced events in the selected window.</strong>
           <small>Switch recency or scope to review older local history.</small>
         </div>
+      ) : filteredEntries.length === 0 ? (
+        <div className="empty-state">
+          <strong>All visible series are currently hidden.</strong>
+          <small>Turn one or more legend toggles back on to repopulate the chart.</small>
+        </div>
       ) : (
         <>
-          <div className="timeline-chart-frame">
+          <div className="timeline-chart-frame compact">
+            {activeEntry ? (
+              <ChartInspectorCard
+                collection={collection}
+                entry={activeEntry}
+                ethUsd={ethUsd}
+                referenceTimestamp={referenceTimestamp}
+                valueMode={valueMode}
+              />
+            ) : null}
             <svg className="timeline-chart" viewBox="0 0 760 288" role="img">
               <rect
                 className="timeline-plot-surface"
@@ -2135,32 +2478,22 @@ function TimelinePanel({
                 y2={frame.bottom}
               />
               {typeof medianReference === "number" && typeof medianY === "number" ? (
-                <>
-                  <line
-                    className="timeline-reference-line median"
-                    x1={frame.left}
-                    x2={frame.right}
-                    y1={medianY}
-                    y2={medianY}
-                  />
-                  <text className="timeline-reference-label" x={frame.left + 10} y={medianY - 8}>
-                    30d median {formatTimelineAxisValue(medianReference)}
-                  </text>
-                </>
+                <line
+                  className="timeline-reference-line median"
+                  x1={frame.left}
+                  x2={frame.right}
+                  y1={medianY}
+                  y2={medianY}
+                />
               ) : null}
               {typeof topBidReference === "number" && typeof topBidY === "number" ? (
-                <>
-                  <line
-                    className="timeline-reference-line bid"
-                    x1={frame.left}
-                    x2={frame.right}
-                    y1={topBidY}
-                    y2={topBidY}
-                  />
-                  <text className="timeline-reference-label" x={frame.left + 10} y={topBidY - 8}>
-                    top bid {formatTimelineAxisValue(topBidReference)}
-                  </text>
-                </>
+                <line
+                  className="timeline-reference-line bid"
+                  x1={frame.left}
+                  x2={frame.right}
+                  y1={topBidY}
+                  y2={topBidY}
+                />
               ) : null}
               {linePath ? <path className="timeline-path" d={linePath} /> : null}
               {chartEntries.map((entry, index) => {
@@ -2173,6 +2506,8 @@ function TimelinePanel({
                   ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
                   : false;
                 const semantic = getTimelineEntrySemantic(entry);
+                const relevance = getEntryRelevance(entry);
+                const markerOpacity = Math.min(1, 0.4 + relevance * 0.6);
                 const className = [
                   "timeline-dot",
                   semantic,
@@ -2183,29 +2518,36 @@ function TimelinePanel({
                   .join(" ");
 
                 if (semantic === "ask") {
+                  const size = selected ? 16 : 11 + relevance * 6;
                   return (
                     <g key={getTimelineEntryKey(entry)}>
                       <rect
                         className={className}
-                        height={selected ? 16 : 13}
+                        height={size}
+                        opacity={markerOpacity}
                         onClick={() => onInspect(entry)}
+                        onMouseEnter={() => setHoveredEntryKey(getTimelineEntryKey(entry))}
+                        onMouseLeave={() => setHoveredEntryKey(undefined)}
                         rx={2}
                         transform={`rotate(45 ${point.x} ${point.y})`}
-                        width={selected ? 16 : 13}
-                        x={point.x - (selected ? 8 : 6.5)}
-                        y={point.y - (selected ? 8 : 6.5)}
+                        width={size}
+                        x={point.x - size / 2}
+                        y={point.y - size / 2}
                       />
                     </g>
                   );
                 }
 
                 if (semantic === "bid") {
-                  const offset = selected ? 9 : 7;
+                  const offset = selected ? 9 : 6 + relevance * 4;
                   return (
                     <g key={getTimelineEntryKey(entry)}>
                       <polygon
                         className={className}
+                        opacity={markerOpacity}
                         onClick={() => onInspect(entry)}
+                        onMouseEnter={() => setHoveredEntryKey(getTimelineEntryKey(entry))}
+                        onMouseLeave={() => setHoveredEntryKey(undefined)}
                         points={`${point.x},${point.y - offset} ${point.x - offset},${point.y + offset - 2} ${point.x + offset},${point.y + offset - 2}`}
                       />
                     </g>
@@ -2218,20 +2560,23 @@ function TimelinePanel({
                       className={className}
                       cx={point.x}
                       cy={point.y}
+                      opacity={markerOpacity}
                       onClick={() => onInspect(entry)}
-                      r={selected ? 9 : semantic === "aggregate" ? 6.5 : 5.5}
+                      onMouseEnter={() => setHoveredEntryKey(getTimelineEntryKey(entry))}
+                      onMouseLeave={() => setHoveredEntryKey(undefined)}
+                      r={selected ? 9 : semantic === "aggregate" ? 5.5 + relevance * 3 : 4 + relevance * 4}
                     />
                   </g>
                 );
               })}
             </svg>
             <div className="timeline-axis-notes">
-              <span>Price axis in Ξ.</span>
+              <span>Price axis in Ξ. Marker size and opacity track local relevance.</span>
               <span>{chartNote}</span>
             </div>
           </div>
           <div className="timeline-anchor-list">
-            {entries.slice(0, 6).map((entry) => {
+            {prioritizedEntries.slice(0, 6).map((entry) => {
               const selected = inspectedEntry
                 ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
                 : false;
@@ -2246,6 +2591,8 @@ function TimelinePanel({
                   key={getTimelineEntryKey(entry)}
                   className={selected ? "timeline-anchor active" : "timeline-anchor"}
                   onClick={() => onInspect(entry)}
+                  onMouseEnter={() => setHoveredEntryKey(getTimelineEntryKey(entry))}
+                  onMouseLeave={() => setHoveredEntryKey(undefined)}
                   type="button"
                 >
                   <span className={`timeline-anchor-type ${anchor.semantic}`}>{anchor.label}</span>
@@ -2264,6 +2611,49 @@ function TimelinePanel({
   );
 }
 
+function ChartInspectorCard({
+  collection,
+  entry,
+  ethUsd,
+  referenceTimestamp,
+  valueMode,
+}: {
+  collection: CollectionData;
+  entry: TimelineEntry;
+  ethUsd: number;
+  referenceTimestamp: number;
+  valueMode: ValueMode;
+}) {
+  const anchor = describeTimelineAnchor(entry, collection);
+  const token = isAggregateTimelineEntry(entry)
+    ? undefined
+    : isTimelineBidEntry(entry)
+      ? collection.tokensById.get(entry.tokenId ?? -1)
+      : collection.tokensById.get(entry.token_id);
+  const value = isAggregateTimelineEntry(entry)
+    ? formatValue(entry.medianPriceEth, undefined, ethUsd, valueMode)
+    : isTimelineBidEntry(entry)
+      ? formatValue(entry.priceEth, entry.priceUsd, ethUsd, valueMode)
+      : formatValue(entry.price_eth, entry.price_usd, ethUsd, valueMode);
+
+  return (
+    <div className="chart-inspector-card">
+      {token ? <TokenThumbnail slug={collection.summary.slug} token={token} /> : null}
+      <div className="chart-inspector-copy">
+        <div className="chart-inspector-topline">
+          <span className={`timeline-anchor-type ${anchor.semantic}`}>{anchor.label}</span>
+          <strong>{value}</strong>
+        </div>
+        <div className="chart-inspector-title">{anchor.detail}</div>
+        <div className="chart-inspector-meta">
+          <span>{formatCompactDate(entry.timestamp)}</span>
+          <span>{formatRelativeAge(entry.timestamp, referenceTimestamp)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function NeighborhoodPanel({
   collectionSlug,
   ethUsd,
@@ -2273,6 +2663,7 @@ function NeighborhoodPanel({
   onInspect,
   onModeChange,
   onSizeChange,
+  selectedTraitCount,
   selectedToken,
   shownCount,
   size,
@@ -2287,6 +2678,7 @@ function NeighborhoodPanel({
   onInspect: (neighbor: NeighborRecord) => void;
   onModeChange: (mode: NeighborhoodMode) => void;
   onSizeChange: (size: NeighborhoodSizeOption) => void;
+  selectedTraitCount: number;
   selectedToken: TokenWithNumber;
   shownCount: number;
   size: NeighborhoodSizeOption;
@@ -2309,7 +2701,7 @@ function NeighborhoodPanel({
   return (
     <section className="timeline-card">
       <div className="timeline-toolbar">
-        <div className="segmented-control wrap">
+        <div className="segmented-control wrap compact">
           {modes.map((entry) => (
             <button
               key={entry.value}
@@ -2322,7 +2714,7 @@ function NeighborhoodPanel({
             </button>
           ))}
         </div>
-        <div className="segmented-control wrap">
+        <div className="segmented-control wrap compact">
           {neighborhoodSizeOptions.map((option) => (
             <button
               key={String(option)}
@@ -2338,7 +2730,7 @@ function NeighborhoodPanel({
       <p className="footnote">
         Neighborhoods are computed locally from token records plus token traits only.
         {mode === "trait"
-          ? " Trait mode emphasizes shared visible traits."
+          ? ` Trait mode is currently using ${selectedTraitCount} selected trait row${selectedTraitCount === 1 ? "" : "s"}.`
           : mode === "rarity"
             ? " Rarity mode emphasizes nearby ranks."
             : " Additional modes remain placeholders until stronger local evidence exists."}
@@ -2355,6 +2747,29 @@ function NeighborhoodPanel({
           </span>
         ) : null}
       </div>
+      {inspectedNeighbor ? (
+        <div className="chart-inspector-card neighbor">
+          <TokenThumbnail slug={collectionSlug} token={inspectedNeighbor.token} />
+          <div className="chart-inspector-copy">
+            <div className="chart-inspector-topline">
+              <span className="timeline-anchor-type ask">Neighbor</span>
+              <strong>
+                {formatValue(
+                  inspectedNeighbor.token.current_ask_eth,
+                  undefined,
+                  ethUsd,
+                  valueMode,
+                )}
+              </strong>
+            </div>
+            <div className="chart-inspector-title">{inspectedNeighbor.token.display_name}</div>
+            <div className="chart-inspector-meta">
+              <span>{inspectedNeighbor.sharedTraitCount} shared traits</span>
+              <span>rarity gap {formatDistance(inspectedNeighbor.rarityGap)}</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {neighbors.length === 0 ? (
         <div className="empty-state">
           <strong>No local neighbors in this mode yet.</strong>
@@ -2485,150 +2900,6 @@ function NeighborhoodPanel({
   );
 }
 
-function TimelineInspector({
-  activity,
-  collection,
-  ethUsd,
-  referenceTimestamp,
-  valueMode,
-}: {
-  activity: TimelineEntry;
-  collection: CollectionData;
-  ethUsd: number;
-  referenceTimestamp: number;
-  valueMode: ValueMode;
-}) {
-  if (isAggregateTimelineEntry(activity)) {
-    return (
-      <div className="inspector-body">
-        <Metric
-          label="Window"
-          value={`${formatCompactDate(activity.startTimestamp)} to ${formatCompactDate(activity.endTimestamp)}`}
-        />
-        <Metric
-          label="Median price"
-          value={formatValue(activity.medianPriceEth, undefined, ethUsd, valueMode)}
-        />
-        <Metric label="Events" value={`${activity.eventCount}`} />
-        <Metric label="Tokens represented" value={`${activity.tokenCount}`} />
-        <Metric label="Private events" value={`${activity.privateCount}`} />
-        <p className="footnote">
-          Aggregate lane groups collection-wide activity into local time buckets so the inspector can
-          summarize event density without implying token-level comparability.
-        </p>
-      </div>
-    );
-  }
-
-  if (isTimelineBidEntry(activity)) {
-    return (
-      <div className="inspector-body">
-        <Metric
-          label="Bid scope"
-          value={activity.bidScope === "collection" ? "Collection" : "Token"}
-        />
-        {activity.bidScope === "token" ? (
-          <Metric
-            label="Token"
-            value={
-              collection.tokensById.get(activity.tokenId ?? -1)?.display_name ??
-              "Unknown token"
-            }
-          />
-        ) : null}
-        <Metric
-          label="Bid"
-          value={formatValue(activity.priceEth, activity.priceUsd, ethUsd, valueMode)}
-        />
-        <Metric label="Opened" value={formatDate(activity.timestamp)} />
-        <Metric
-          label="Opened age"
-          value={formatRelativeAge(activity.timestamp, referenceTimestamp)}
-        />
-        <Metric label="Expires" value={formatDate(activity.endTimestamp)} />
-        <Metric label="Source" value={activity.source ?? "Unknown"} />
-        <p className="footnote">
-          Bid entries reflect the active local bid snapshot only. The chart plots bid-open time and
-          expiry from `bids.json`, without inventing a full bid-by-bid history.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="inspector-body">
-      <Metric
-        label="Token"
-        value={collection.tokensById.get(activity.token_id)?.display_name ?? activity.token_index}
-      />
-      <Metric
-        label="Event"
-        value={
-          getActivityMarketType(activity) === "ask"
-            ? activity.is_private
-              ? "Private ask"
-              : "Ask"
-            : activity.is_private
-              ? "Private sale"
-              : "Sale"
-        }
-      />
-      <Metric label="Timestamp" value={formatDate(activity.timestamp)} />
-      <Metric
-        label="Price"
-        value={formatValue(activity.price_eth, activity.price_usd, ethUsd, valueMode)}
-      />
-      <Metric label="Age" value={formatRelativeAge(activity.timestamp, referenceTimestamp)} />
-      <Metric label="Private" value={activity.is_private ? "Yes" : "No"} />
-      <p className="footnote">
-        Listings and listing_private rows are treated as ask-side events. Private rows remain
-        visible but distinct.
-      </p>
-    </div>
-  );
-}
-
-function NeighborInspector({
-  collectionSlug,
-  ethUsd,
-  neighbor,
-  valueMode,
-}: {
-  collectionSlug: string;
-  ethUsd: number;
-  neighbor: NeighborRecord;
-  valueMode: ValueMode;
-}) {
-  const rarityBucket = deriveRarityBucket(neighbor.token.rarityPercentile);
-
-  return (
-    <div className="inspector-body">
-      <TokenArtwork
-        alt={neighbor.token.display_name}
-        rarityBucket={rarityBucket}
-        slug={collectionSlug}
-        token={neighbor.token}
-      />
-      <Metric label="Neighbor" value={neighbor.token.display_name} />
-      <Metric
-        label="Ask"
-        value={formatValue(neighbor.token.current_ask_eth, undefined, ethUsd, valueMode)}
-      />
-      <Metric
-        label="Prediction"
-        value={formatValue(neighbor.token.prediction_eth, undefined, ethUsd, valueMode)}
-      />
-      <Metric label="Rarity bucket" value={rarityBucket?.label ?? "N/A"} />
-      <Metric label="Rarity gap" value={formatDistance(neighbor.rarityGap)} />
-      <p className="footnote">
-        {neighbor.sharedTraitNames.length > 0
-          ? `Shared traits: ${neighbor.sharedTraitNames.slice(0, 4).join(" / ")}`
-          : "Rarity neighborhood is based on locally derived rank proximity."}
-      </p>
-    </div>
-  );
-}
-
 function BidList({
   bids,
   ethUsd,
@@ -2640,6 +2911,8 @@ function BidList({
   title: string;
   valueMode: ValueMode;
 }) {
+  const maxBidEth = Math.max(...bids.map((bid) => bid.price_eth ?? 0), 0.0001);
+
   return (
     <div className="bid-list">
       <p className="eyebrow">{title}</p>
@@ -2647,7 +2920,15 @@ function BidList({
         <p className="footnote">No active bids in the local snapshot.</p>
       ) : (
         bids.map((bid) => (
-          <div key={bid.bid_id} className="bid-row">
+          <div
+            key={bid.bid_id}
+            className="bid-row"
+            style={
+              {
+                "--bid-strength": `${Math.max(0.12, (bid.price_eth ?? 0) / maxBidEth)}`,
+              } as CSSProperties
+            }
+          >
             <strong>{formatValue(bid.price_eth, bid.price_usd, ethUsd, valueMode)}</strong>
             <small>
               {bid.bidder_address ? `${bid.bidder_address.slice(0, 6)}...` : "Unknown bidder"} /

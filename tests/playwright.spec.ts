@@ -11,7 +11,7 @@ test("captures required Fidenza screenshots", async ({ page }) => {
   });
 
   await page.getByRole("button", { name: /open workbench/i }).click();
-  await expect(page.getByRole("heading", { name: /fidenza valuation workbench/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^fidenza$/i })).toBeVisible();
   await expect(page.getByText(/sales \d+/i)).toBeVisible();
   await expect(page.getByText(/asks \d+/i)).toBeVisible();
   await expect(page.getByText(/bids \d+/i)).toBeVisible();

@@ -1,6 +1,6 @@
 import type { ValueMode } from "../data/types.ts";
 
-const ETH_SYMBOL = "Ξ";
+const ETH_SYMBOL = "\u039E";
 
 function formatNumber(value: number, digits = 2) {
   return new Intl.NumberFormat("en-US", {

@@ -162,9 +162,14 @@ export function deriveNeighbors(
   collection: CollectionData,
   token: TokenWithNumber,
   mode: NeighborhoodMode,
+  selectedPropertyIds: number[] = [],
 ): NeighborRecord[] {
   const traitSets = buildTraitSets(collection);
-  const targetTraits = traitSets.get(token.token_id) ?? new Set<number>();
+  const tokenTraits = traitSets.get(token.token_id) ?? new Set<number>();
+  const targetTraits =
+    selectedPropertyIds.length > 0
+      ? new Set(selectedPropertyIds.filter((propertyId) => tokenTraits.has(propertyId)))
+      : tokenTraits;
 
   if (mode === "visual" || mode === "curated") {
     return [];
