@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { calculateMedian } from "../src/data/loadCollections.ts";
 import type { CollectionData, TokenWithNumber } from "../src/data/types.ts";
 import {
+  buildNeighborhoodPlot,
+  deriveRarityBucket,
   deriveCombinedTraitMetrics,
   deriveNeighbors,
 } from "../src/lib/derive.ts";
@@ -111,6 +113,62 @@ describe("deriveNeighbors", () => {
     expect(result).toHaveLength(15);
     expect(result[0]?.token.token_id).toBe(2);
     expect(result.at(-1)?.token.token_id).toBe(16);
+  });
+});
+
+describe("deriveRarityBucket", () => {
+  it("assigns deterministic percentile buckets", () => {
+    expect(deriveRarityBucket(0.01)?.label).toBe("Top 1%");
+    expect(deriveRarityBucket(0.03)?.label).toBe("Top 5%");
+    expect(deriveRarityBucket(0.08)?.label).toBe("Top 10%");
+    expect(deriveRarityBucket(0.2)?.label).toBe("Top 25%");
+    expect(deriveRarityBucket(0.7)?.label).toBe("Mid");
+    expect(deriveRarityBucket(0.95)?.label).toBe("Common");
+  });
+});
+
+describe("buildNeighborhoodPlot", () => {
+  it("keeps the selected token centered and maps neighbors deterministically", () => {
+    const selected = createToken(1, 10, {
+      prediction_eth: 10,
+      adjusted_floor_eth: 9,
+      rarityPercentile: 0.5,
+      rarity_rank: 500,
+    });
+    const stronger = createToken(2, 11, {
+      prediction_eth: 13,
+      adjusted_floor_eth: 11,
+      rarityPercentile: 0.2,
+      rarity_rank: 200,
+    });
+    const weaker = createToken(3, 12, {
+      prediction_eth: 8,
+      adjusted_floor_eth: 7,
+      rarityPercentile: 0.75,
+      rarity_rank: 750,
+    });
+    const collection = createCollection([selected, stronger, weaker], new Map([
+      [selected.token_id, [1, 2, 3]],
+      [stronger.token_id, [1, 2, 3]],
+      [weaker.token_id, [1]],
+    ]));
+    const neighbors = deriveNeighbors(collection, selected, "trait");
+
+    const plot = buildNeighborhoodPlot(selected, neighbors, "trait");
+
+    expect(plot[0]).toMatchObject({
+      tokenId: selected.token_id,
+      x: 0,
+      y: 0,
+      isSelected: true,
+    });
+    expect(plot[1]?.tokenId).toBe(stronger.token_id);
+    expect(plot[1]?.x).toBeGreaterThan(0);
+    expect(plot[1]?.y).toBeGreaterThan(0);
+    expect(plot[2]?.tokenId).toBe(weaker.token_id);
+    expect(plot[2]?.x).toBeLessThan(0);
+    expect(plot[2]?.y).toBeLessThan(0);
+    expect(plot[1]?.radius).toBeGreaterThan(plot[2]?.radius ?? 0);
   });
 });
 

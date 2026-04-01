@@ -10,6 +10,39 @@ import type {
   TokenWithNumber,
 } from "../data/types.ts";
 
+export type RarityBucketTone = "elite" | "rare" | "mid" | "common";
+
+export type RarityBucket = {
+  label: "Top 1%" | "Top 5%" | "Top 10%" | "Top 25%" | "Mid" | "Common";
+  tone: RarityBucketTone;
+};
+
+export type NeighborhoodPlotPoint = {
+  tokenId: number;
+  tokenNumber: number;
+  label: string;
+  x: number;
+  y: number;
+  radius: number;
+  isSelected: boolean;
+  rarityBucket: RarityBucket | null;
+  sharedTraitCount: number;
+  rarityGap: number;
+};
+
+const rarityBuckets: Array<{
+  maxPercentile: number;
+  label: RarityBucket["label"];
+  tone: RarityBucketTone;
+}> = [
+  { maxPercentile: 0.01, label: "Top 1%", tone: "elite" },
+  { maxPercentile: 0.05, label: "Top 5%", tone: "elite" },
+  { maxPercentile: 0.1, label: "Top 10%", tone: "rare" },
+  { maxPercentile: 0.25, label: "Top 25%", tone: "rare" },
+  { maxPercentile: 0.75, label: "Mid", tone: "mid" },
+  { maxPercentile: Number.POSITIVE_INFINITY, label: "Common", tone: "common" },
+];
+
 export function getVisibleTraits(collection: CollectionData, tokenId: number) {
   return (collection.tokenTraitsByTokenId.get(tokenId) ?? [])
     .filter((trait) => !trait.category_ignore_for_valuation && !trait.category_is_trait_count)
@@ -36,6 +69,15 @@ export function getTopTokenBids(collection: CollectionData, tokenId: number) {
 
 export function getTopCollectionBids(collection: CollectionData) {
   return collection.collectionBids.slice(0, 5);
+}
+
+export function deriveRarityBucket(percentile: number | undefined) {
+  if (percentile === undefined || !Number.isFinite(percentile)) {
+    return null;
+  }
+
+  const bucket = rarityBuckets.find((entry) => percentile <= entry.maxPercentile);
+  return bucket ? { label: bucket.label, tone: bucket.tone } : null;
 }
 
 export function deriveCombinedTraitMetrics(
@@ -105,6 +147,17 @@ function buildTraitSets(collection: CollectionData) {
   return traitSets;
 }
 
+function clampCoordinate(value: number) {
+  return Math.max(-1, Math.min(1, value));
+}
+
+function getNeighborhoodValueAnchor(token: TokenWithNumber, mode: NeighborhoodMode) {
+  if (mode === "trait") {
+    return token.prediction_eth ?? token.adjusted_floor_eth ?? token.current_ask_eth ?? 0;
+  }
+  return token.adjusted_floor_eth ?? token.prediction_eth ?? token.current_ask_eth ?? 0;
+}
+
 export function deriveNeighbors(
   collection: CollectionData,
   token: TokenWithNumber,
@@ -149,8 +202,73 @@ export function deriveNeighbors(
     .sort((left, right) => right.score - left.score);
 }
 
+export function buildNeighborhoodPlot(
+  selectedToken: TokenWithNumber,
+  neighbors: NeighborRecord[],
+  mode: NeighborhoodMode,
+): NeighborhoodPlotPoint[] {
+  const baseValue = getNeighborhoodValueAnchor(selectedToken, mode);
+  const valueSpreads = neighbors.map((neighbor) =>
+    Math.abs(getNeighborhoodValueAnchor(neighbor.token, mode) - baseValue),
+  );
+  const raritySpreads = neighbors.map((neighbor) =>
+    Math.abs((selectedToken.rarityPercentile ?? 1) - (neighbor.token.rarityPercentile ?? 1)),
+  );
+  const closenessSignals = neighbors.map((neighbor) =>
+    mode === "trait" ? neighbor.sharedTraitCount : 1 / Math.max(neighbor.rarityGap, 1),
+  );
+  const maxValueSpread = Math.max(...valueSpreads, 1);
+  const maxRaritySpread = Math.max(...raritySpreads, 0.01);
+  const maxCloseness = Math.max(...closenessSignals, 1);
+
+  return [
+    {
+      tokenId: selectedToken.token_id,
+      tokenNumber: selectedToken.tokenNumber,
+      label: selectedToken.display_name,
+      x: 0,
+      y: 0,
+      radius: 14,
+      isSelected: true,
+      rarityBucket: deriveRarityBucket(selectedToken.rarityPercentile),
+      sharedTraitCount: 0,
+      rarityGap: 0,
+    },
+    ...neighbors.map((neighbor, index) => {
+      const closeness = closenessSignals[index] ?? 1;
+      return {
+        tokenId: neighbor.token.token_id,
+        tokenNumber: neighbor.token.tokenNumber,
+        label: neighbor.token.display_name,
+        x: clampCoordinate(
+          (getNeighborhoodValueAnchor(neighbor.token, mode) - baseValue) / maxValueSpread,
+        ),
+        y: clampCoordinate(
+          ((selectedToken.rarityPercentile ?? 1) - (neighbor.token.rarityPercentile ?? 1)) /
+            maxRaritySpread,
+        ),
+        radius: 7 + (closeness / maxCloseness) * 6,
+        isSelected: false,
+        rarityBucket: deriveRarityBucket(neighbor.token.rarityPercentile),
+        sharedTraitCount: neighbor.sharedTraitCount,
+        rarityGap: neighbor.rarityGap,
+      };
+    }),
+  ];
+}
+
 export function getDefaultInspectorActivity(activities: Activity[]) {
   return activities.find((activity) => activity.price_eth !== undefined) ?? activities[0];
+}
+
+export function getActivityMarketType(activity: Pick<Activity, "kind">) {
+  if (activity.kind.includes("sale")) {
+    return "sale" as const;
+  }
+  if (activity.kind.includes("listing")) {
+    return "ask" as const;
+  }
+  return null;
 }
 
 export function summarizeMarketBand(token: TokenWithNumber, bids: Bid[]) {

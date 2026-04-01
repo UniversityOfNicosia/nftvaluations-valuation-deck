@@ -13,6 +13,7 @@ import {
 } from "./data/loadCollections.ts";
 import type {
   Activity,
+  Bid,
   CollectionData,
   CollectionSummary,
   NeighborRecord,
@@ -21,9 +22,12 @@ import type {
   ValueMode,
 } from "./data/types.ts";
 import {
+  buildNeighborhoodPlot,
+  deriveRarityBucket,
   deriveCombinedTraitMetrics,
   deriveNeighbors,
   getDefaultTraitSelection,
+  getActivityMarketType,
   getTokenActivityHistory,
   getTopCollectionBids,
   getTopTokenBids,
@@ -66,7 +70,27 @@ type TimelineAggregateBucket = {
   privateCount: number;
   tokenCount: number;
 };
-type TimelineEntry = Activity | TimelineAggregateBucket;
+type TimelineBidEntry = {
+  entryType: "bid";
+  bidId: string;
+  bidScope: "token" | "collection";
+  tokenId?: number;
+  timestamp: number;
+  endTimestamp?: number;
+  priceEth?: number;
+  priceUsd?: number;
+  bidderAddress?: string;
+  source?: string;
+};
+type TimelineEntry = Activity | TimelineAggregateBucket | TimelineBidEntry;
+type TimelineLegend = {
+  total: number;
+  saleCount: number;
+  askCount: number;
+  bidCount: number;
+  privateCount: number;
+  tokenCount: number;
+};
 
 const timelineScopeOptions: Array<{ label: string; value: TimelineScope }> = [
   { label: "Token only", value: "token" },
@@ -192,24 +216,98 @@ function buildAggregateTimeline(
     .sort((left, right) => right.timestamp - left.timestamp);
 }
 
+function buildTimelineBidEntries(
+  bids: Bid[],
+  cutoffTimestamp: number,
+  bidScope: "token" | "collection",
+) {
+  return bids
+    .filter((bid) => bid.status === "ACTIVE" && bid.is_active !== false)
+    .filter((bid) => bid.start_ts >= cutoffTimestamp)
+    .map<TimelineBidEntry>((bid) => ({
+      entryType: "bid",
+      bidId: bid.bid_id,
+      bidScope,
+      tokenId: bid.token_id,
+      timestamp: bid.start_ts,
+      endTimestamp: bid.end_ts,
+      priceEth: bid.price_eth,
+      priceUsd: bid.price_usd,
+      bidderAddress: bid.bidder_address,
+      source: bid.source,
+    }))
+    .sort((left, right) => right.timestamp - left.timestamp);
+}
+
 function isAggregateTimelineEntry(
   entry: TimelineEntry | undefined,
 ): entry is TimelineAggregateBucket {
   return entry !== undefined && "bucketId" in entry;
 }
 
+function isTimelineBidEntry(entry: TimelineEntry | undefined): entry is TimelineBidEntry {
+  return entry !== undefined && "entryType" in entry && entry.entryType === "bid";
+}
+
 function getTimelineEntryKey(entry: TimelineEntry) {
-  return isAggregateTimelineEntry(entry) ? entry.bucketId : `activity-${entry.activity_id}`;
+  if (isAggregateTimelineEntry(entry)) {
+    return entry.bucketId;
+  }
+  if (isTimelineBidEntry(entry)) {
+    return `bid-${entry.bidId}`;
+  }
+  return `activity-${entry.activity_id}`;
 }
 
 function getTimelineEntryValue(entry: TimelineEntry) {
-  return isAggregateTimelineEntry(entry) ? entry.medianPriceEth ?? 0 : entry.price_eth ?? 0;
+  if (isAggregateTimelineEntry(entry)) {
+    return entry.medianPriceEth ?? 0;
+  }
+  if (isTimelineBidEntry(entry)) {
+    return entry.priceEth ?? 0;
+  }
+  return entry.price_eth ?? 0;
+}
+
+function getTimelineLegend(
+  activities: Activity[],
+  bidEntries: TimelineBidEntry[],
+): TimelineLegend {
+  const activityTokenIds = activities.map((activity) => activity.token_id);
+  const bidTokenIds = bidEntries
+    .map((entry) => entry.tokenId)
+    .filter((tokenId): tokenId is number => tokenId !== undefined);
+
+  return {
+    total: activities.length + bidEntries.length,
+    saleCount: activities.filter((activity) => getActivityMarketType(activity) === "sale").length,
+    askCount: activities.filter((activity) => getActivityMarketType(activity) === "ask").length,
+    bidCount: bidEntries.length,
+    privateCount: activities.filter(
+      (activity) => activity.is_private || activity.kind.includes("private"),
+    ).length,
+    tokenCount: new Set([...activityTokenIds, ...bidTokenIds]).size,
+  };
 }
 
 function describePath(points: Array<{ x: number; y: number }>) {
   return points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
     .join(" ");
+}
+
+function getTimelineEntrySemantic(entry: TimelineEntry) {
+  if (isAggregateTimelineEntry(entry)) {
+    return "aggregate" as const;
+  }
+  if (isTimelineBidEntry(entry)) {
+    return "bid" as const;
+  }
+  return getActivityMarketType(entry) ?? "sale";
+}
+
+function getRarityToneClass(tone?: string) {
+  return tone ? `rarity-tone-${tone}` : "";
 }
 
 function LandingPage({
@@ -505,9 +603,15 @@ function TokenWorkbenchPanels({
   const selectedTraitRows = visibleTraits.filter((trait) =>
     activeTraits.includes(trait.property_id),
   );
+  const selectedRarityBucket = deriveRarityBucket(selectedToken.rarityPercentile);
   const timelineData = useMemo(() => {
     const cutoffTimestamp = getTimelineCutoff(referenceTimestamp, timelineRange);
     const tokenActivities = filterTimelineActivities(allTokenActivity, cutoffTimestamp);
+    const tokenBidEntries = buildTimelineBidEntries(
+      collection.tokenBidsByTokenId.get(selectedToken.token_id) ?? [],
+      cutoffTimestamp,
+      "token",
+    );
     const neighborhoodTokenIds = new Set([
       selectedToken.token_id,
       ...visibleNeighbors.map((neighbor) => neighbor.token.token_id),
@@ -516,42 +620,55 @@ function TokenWorkbenchPanels({
       collection.activities.filter((activity) => neighborhoodTokenIds.has(activity.token_id)),
       cutoffTimestamp,
     );
+    const neighborhoodBidEntries = [...neighborhoodTokenIds]
+      .flatMap((tokenId) =>
+        buildTimelineBidEntries(
+          collection.tokenBidsByTokenId.get(tokenId) ?? [],
+          cutoffTimestamp,
+          "token",
+        ),
+      )
+      .sort((left, right) => right.timestamp - left.timestamp);
     const aggregateEntries = buildAggregateTimeline(
       collection.activities,
       cutoffTimestamp,
       timelineRange,
     );
     const collectionActivities = filterTimelineActivities(collection.activities, cutoffTimestamp);
+    const collectionBidEntries = buildTimelineBidEntries(
+      collection.collectionBids,
+      cutoffTimestamp,
+      "collection",
+    );
+
     const entries: TimelineEntry[] =
       timelineScope === "token"
-        ? tokenActivities
+        ? [...tokenActivities, ...tokenBidEntries].sort(
+            (left, right) => right.timestamp - left.timestamp,
+          )
         : timelineScope === "neighborhood"
-          ? neighborhoodActivities
-          : aggregateEntries;
-    const legendSource =
+          ? [...neighborhoodActivities, ...neighborhoodBidEntries].sort(
+              (left, right) => right.timestamp - left.timestamp,
+            )
+          : [...aggregateEntries, ...collectionBidEntries].sort(
+              (left, right) => right.timestamp - left.timestamp,
+            );
+    const legend =
       timelineScope === "token"
-        ? tokenActivities
+        ? getTimelineLegend(tokenActivities, tokenBidEntries)
         : timelineScope === "neighborhood"
-          ? neighborhoodActivities
-          : collectionActivities;
+          ? getTimelineLegend(neighborhoodActivities, neighborhoodBidEntries)
+          : getTimelineLegend(collectionActivities, collectionBidEntries);
 
     return {
       entries,
-      legend: {
-        total: legendSource.length,
-        saleCount: legendSource.filter((activity) => activity.kind.includes("sale")).length,
-        listingCount: legendSource.filter((activity) =>
-          activity.kind.includes("listing"),
-        ).length,
-        privateCount: legendSource.filter(
-          (activity) => activity.is_private || activity.kind.includes("private"),
-        ).length,
-        tokenCount: new Set(legendSource.map((activity) => activity.token_id)).size,
-      },
+      legend,
     };
   }, [
     allTokenActivity,
     collection.activities,
+    collection.collectionBids,
+    collection.tokenBidsByTokenId,
     referenceTimestamp,
     selectedToken.token_id,
     timelineRange,
@@ -615,7 +732,7 @@ function TokenWorkbenchPanels({
         </section>
 
         <section className="token-card">
-          <TokenFallback token={selectedToken} />
+          <TokenFallback rarityBucket={selectedRarityBucket} token={selectedToken} />
           <div className="market-band">
             <Metric
               label="Bid"
@@ -689,6 +806,10 @@ function TokenWorkbenchPanels({
                   ? `${selectedToken.rarity_rank} / ${collection.tokens.length}`
                   : "N/A"
               }
+            />
+            <Metric
+              label="Rarity bucket"
+              value={selectedRarityBucket?.label ?? "N/A"}
             />
             <Metric label="Minted" value={formatDate(selectedToken.mint_ts)} />
           </div>
@@ -1092,6 +1213,11 @@ function TokenWorkbenchPanels({
               </strong>.
             </li>
             <li>
+              Local rarity bucket resolves to{" "}
+              <strong>{selectedRarityBucket?.label ?? "N/A"}</strong> from the token's
+              repo-derived rarity percentile.
+            </li>
+            <li>
               Neighborhood mode is local-only and defaults to a 50-token comp set. Visual
               and curated comparables stay disabled placeholders until repo-local sources exist.
             </li>
@@ -1156,7 +1282,13 @@ function ValueModeToggle({
   );
 }
 
-function TokenFallback({ token }: { token: TokenWithNumber }) {
+function TokenFallback({
+  rarityBucket,
+  token,
+}: {
+  rarityBucket: ReturnType<typeof deriveRarityBucket>;
+  token: TokenWithNumber;
+}) {
   const hue = (token.tokenNumber * 29) % 360;
   return (
     <div className="token-fallback" style={{ "--token-hue": `${hue}` } as CSSProperties}>
@@ -1185,7 +1317,16 @@ function TokenFallback({ token }: { token: TokenWithNumber }) {
       </svg>
       <div className="token-fallback-copy">
         <p>{token.display_name}</p>
-        <span>Local-only fallback visual • rarity {token.rarity_rank ?? "N/A"}</span>
+        <div className="token-fallback-meta">
+          <span>
+            Local-only fallback visual • rarity rank {token.rarity_rank ?? "N/A"}
+          </span>
+          {rarityBucket ? (
+            <span className={`pill rarity-pill ${getRarityToneClass(rarityBucket.tone)}`}>
+              {rarityBucket.label}
+            </span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -1209,13 +1350,7 @@ function TimelinePanel({
   entries: TimelineEntry[];
   ethUsd: number;
   inspectedEntry?: TimelineEntry;
-  legend: {
-    total: number;
-    saleCount: number;
-    listingCount: number;
-    privateCount: number;
-    tokenCount: number;
-  };
+  legend: TimelineLegend;
   neighborhoodShownCount: number;
   onInspect: (entry: TimelineEntry) => void;
   onRangeChange: (range: TimelineRange) => void;
@@ -1230,11 +1365,13 @@ function TimelinePanel({
   const minTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : 0;
   const maxTimestamp = timestamps.length > 0 ? Math.max(...timestamps) : 1;
   const linePoints = chartEntries.map((entry) => {
-    const x = 44 + ((entry.timestamp - minTimestamp) / Math.max(maxTimestamp - minTimestamp, 1)) * 676;
+    const x =
+      44 + ((entry.timestamp - minTimestamp) / Math.max(maxTimestamp - minTimestamp, 1)) * 676;
     const y = 210 - (getTimelineEntryValue(entry) / maxPrice) * 176;
     return { x, y };
   });
-  const linePath = linePoints.length > 1 ? describePath(linePoints) : "";
+  const linePath =
+    scope === "aggregate" && linePoints.length > 1 ? describePath(linePoints) : "";
 
   return (
     <section className="timeline-card">
@@ -1266,9 +1403,10 @@ function TimelinePanel({
       </div>
       <div className="timeline-legend">
         <span className="legend-pill">Shown {legend.total}</span>
-        <span className="legend-pill">Sales {legend.saleCount}</span>
-        <span className="legend-pill">Listings {legend.listingCount}</span>
-        <span className="legend-pill">Private {legend.privateCount}</span>
+        <span className="legend-pill sale">Sales {legend.saleCount}</span>
+        <span className="legend-pill ask">Asks {legend.askCount}</span>
+        <span className="legend-pill bid">Bids {legend.bidCount}</span>
+        <span className="legend-pill private">Private {legend.privateCount}</span>
         <span className="legend-pill">Tokens {legend.tokenCount}</span>
         {scope === "neighborhood" ? (
           <span className="legend-pill">Neighborhood size {neighborhoodShownCount}</span>
@@ -1276,10 +1414,13 @@ function TimelinePanel({
       </div>
       <p className="footnote">
         {scope === "token"
-          ? "Token-only scope shows the selected token history after the chosen recency filter."
+          ? "Token-only scope mixes local sale rows, ask/listing rows, and active token bids that opened in the chosen recency window."
           : scope === "neighborhood"
-            ? "Token + neighborhood combines the selected token with the current local neighborhood result set."
-            : "Aggregate lane groups collection-wide events into local median-price windows for the chosen recency filter."}
+            ? "Token + neighborhood combines the selected token with the current local neighborhood result set, including active token bids for the shown tokens."
+            : "Aggregate lane groups collection-wide sale/ask activity into median-price windows and overlays active collection bids by bid-open timestamp."}
+      </p>
+      <p className="footnote">
+        Bid markers use active bid start times plus expiry from the local snapshot only; the workbench does not infer missing bid history.
       </p>
       {entries.length === 0 ? (
         <div className="empty-state">
@@ -1296,26 +1437,59 @@ function TimelinePanel({
               const point = linePoints[index] ?? { x: 44, y: 210 };
               const privateMark =
                 !isAggregateTimelineEntry(entry) &&
+                !isTimelineBidEntry(entry) &&
                 (entry.is_private || entry.kind.includes("private"));
               const selected = inspectedEntry
                 ? getTimelineEntryKey(inspectedEntry) === getTimelineEntryKey(entry)
                 : false;
+              const semantic = getTimelineEntrySemantic(entry);
+              const className = [
+                "timeline-dot",
+                semantic,
+                privateMark ? "private" : "",
+                selected ? "selected" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+
+              if (semantic === "ask") {
+                return (
+                  <g key={getTimelineEntryKey(entry)}>
+                    <rect
+                      className={className}
+                      height={selected ? 14 : 12}
+                      onClick={() => onInspect(entry)}
+                      rx={2}
+                      transform={`rotate(45 ${point.x} ${point.y})`}
+                      width={selected ? 14 : 12}
+                      x={point.x - (selected ? 7 : 6)}
+                      y={point.y - (selected ? 7 : 6)}
+                    />
+                  </g>
+                );
+              }
+
+              if (semantic === "bid") {
+                const offset = selected ? 8 : 7;
+                return (
+                  <g key={getTimelineEntryKey(entry)}>
+                    <polygon
+                      className={className}
+                      onClick={() => onInspect(entry)}
+                      points={`${point.x},${point.y - offset} ${point.x - offset},${point.y + offset - 2} ${point.x + offset},${point.y + offset - 2}`}
+                    />
+                  </g>
+                );
+              }
+
               return (
                 <g key={getTimelineEntryKey(entry)}>
                   <circle
-                    className={
-                      selected
-                        ? "timeline-dot selected"
-                        : privateMark
-                          ? "timeline-dot private"
-                          : isAggregateTimelineEntry(entry)
-                            ? "timeline-dot aggregate"
-                            : "timeline-dot"
-                    }
+                    className={className}
                     cx={point.x}
                     cy={point.y}
                     onClick={() => onInspect(entry)}
-                    r={selected ? 7 : isAggregateTimelineEntry(entry) ? 6 : 5}
+                    r={selected ? 7 : semantic === "aggregate" ? 6 : 5}
                   />
                 </g>
               );
@@ -1349,12 +1523,39 @@ function TimelinePanel({
                         <small>{entry.tokenCount} tokens</small>
                       </div>
                     </>
+                  ) : isTimelineBidEntry(entry) ? (
+                    <>
+                      <div>
+                        <span>{entry.bidScope === "collection" ? "Collection bid" : "Token bid"}</span>
+                        <small>
+                          {entry.bidScope === "collection"
+                            ? "Collection-wide active support"
+                            : collection.tokensById.get(entry.tokenId ?? -1)?.display_name ??
+                              "Unknown token"}
+                        </small>
+                      </div>
+                      <div className="neighbor-metrics">
+                        <strong>
+                          {formatValue(entry.priceEth, entry.priceUsd, ethUsd, valueMode)}
+                        </strong>
+                        <small>opens {formatCompactDate(entry.timestamp)}</small>
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div>
-                        <span>{entry.kind.replace("_", " ")}</span>
+                        <span>
+                          {getActivityMarketType(entry) === "ask"
+                            ? entry.is_private
+                              ? "Private ask"
+                              : "Ask"
+                            : entry.is_private
+                              ? "Private sale"
+                              : "Sale"}
+                        </span>
                         <small>
-                          {collection.tokensById.get(entry.token_id)?.display_name ?? entry.token_index}
+                          {collection.tokensById.get(entry.token_id)?.display_name ??
+                            entry.token_index}
                         </small>
                       </div>
                       <div className="neighbor-metrics">
@@ -1408,6 +1609,12 @@ function NeighborhoodPanel({
     { label: "Visual", value: "visual", disabled: true },
     { label: "Curated", value: "curated", disabled: true },
   ];
+  const plotPoints = useMemo(
+    () => buildNeighborhoodPlot(selectedToken, neighbors, mode),
+    [mode, neighbors, selectedToken],
+  );
+  const selectedPlotPoint = plotPoints[0];
+  const selectedRarityBucket = deriveRarityBucket(selectedToken.rarityPercentile);
 
   return (
     <section className="timeline-card">
@@ -1452,13 +1659,106 @@ function NeighborhoodPanel({
         <span className="legend-pill">
           Against {formatTokenNumber(selectedToken.tokenNumber)}
         </span>
+        {selectedRarityBucket ? (
+          <span className={`legend-pill ${getRarityToneClass(selectedRarityBucket.tone)}`}>
+            {selectedRarityBucket.label}
+          </span>
+        ) : null}
       </div>
       {neighbors.length === 0 ? (
         <div className="empty-state">
           <strong>No local neighbors in this mode yet.</strong>
           <small>Trait and rarity views are data-driven; visual and curated remain placeholders.</small>
         </div>
-      ) : null}
+      ) : (
+        <div className="neighborhood-map-card">
+          <div className="map-caption">
+            <strong>Similarity map</strong>
+            <small>
+              X tracks local value spread from the selected token, Y tracks rarity-percentile
+              spread, and marker size reflects {mode === "trait" ? "shared visible traits." : "rarity proximity."}
+            </small>
+          </div>
+          <svg
+            aria-label={`Neighborhood similarity map for ${selectedToken.display_name}`}
+            className="neighborhood-map"
+            role="img"
+            viewBox="0 0 760 320"
+          >
+            <line className="map-axis" x1="380" x2="380" y1="24" y2="292" />
+            <line className="map-axis" x1="36" x2="724" y1="160" y2="160" />
+            <text className="map-label" x="42" y="148">
+              Lower value
+            </text>
+            <text className="map-label" textAnchor="end" x="718" y="148">
+              Higher value
+            </text>
+            <text className="map-label" x="390" y="34">
+              Rarer
+            </text>
+            <text className="map-label" x="390" y="286">
+              More common
+            </text>
+            {plotPoints.map((point) => {
+              const x = 380 + point.x * 260;
+              const y = 160 - point.y * 110;
+              const inspected = inspectedNeighbor?.token.token_id === point.tokenId;
+              const pointClass = [
+                "map-node",
+                point.isSelected ? "selected" : "neighbor",
+                inspected ? "inspected" : "",
+                getRarityToneClass(point.rarityBucket?.tone),
+              ]
+                .filter(Boolean)
+                .join(" ");
+
+              if (point.isSelected) {
+                return (
+                  <g key={point.tokenId}>
+                    <circle className={pointClass} cx={x} cy={y} r={point.radius} />
+                    <text className="map-selected-label" textAnchor="middle" x={x} y={y - 20}>
+                      {formatTokenNumber(point.tokenNumber)}
+                    </text>
+                  </g>
+                );
+              }
+
+              const neighbor = neighbors.find((entry) => entry.token.token_id === point.tokenId);
+              if (!neighbor) {
+                return null;
+              }
+
+              return (
+                <g
+                  aria-label={`Inspect ${point.label}`}
+                  className="map-button"
+                  key={point.tokenId}
+                  onClick={() => onInspect(neighbor)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onInspect(neighbor);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <circle className={pointClass} cx={x} cy={y} r={point.radius} />
+                  {inspected ? (
+                    <text className="map-inspected-label" textAnchor="middle" x={x} y={y - 18}>
+                      {formatTokenNumber(point.tokenNumber)}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
+          <div className="timeline-legend">
+            <span className="legend-pill">Center {selectedPlotPoint?.label ?? selectedToken.display_name}</span>
+            <span className="legend-pill">Click plotted neighbors to inspect</span>
+          </div>
+        </div>
+      )}
       <div className="neighbor-list">
         {neighbors.map((neighbor) => (
           <button
@@ -1475,7 +1775,8 @@ function NeighborhoodPanel({
               <strong>{neighbor.token.display_name}</strong>
               <small>
                 {neighbor.sharedTraitCount} shared traits • rarity gap{" "}
-                {formatDistance(neighbor.rarityGap)}
+                {formatDistance(neighbor.rarityGap)} •{" "}
+                {deriveRarityBucket(neighbor.token.rarityPercentile)?.label ?? "N/A"}
               </small>
             </div>
             <div className="neighbor-metrics">
@@ -1597,15 +1898,64 @@ function TimelineInspector({
     );
   }
 
+  if (isTimelineBidEntry(activity)) {
+    return (
+      <div className="inspector-body">
+        <Metric
+          label="Bid scope"
+          value={activity.bidScope === "collection" ? "Collection" : "Token"}
+        />
+        {activity.bidScope === "token" ? (
+          <Metric
+            label="Token"
+            value={
+              collection.tokensById.get(activity.tokenId ?? -1)?.display_name ??
+              "Unknown token"
+            }
+          />
+        ) : null}
+        <Metric
+          label="Bid"
+          value={formatValue(activity.priceEth, activity.priceUsd, ethUsd, valueMode)}
+        />
+        <Metric label="Opened" value={formatDate(activity.timestamp)} />
+        <Metric
+          label="Opened age"
+          value={formatRelativeAge(activity.timestamp, referenceTimestamp)}
+        />
+        <Metric label="Expires" value={formatDate(activity.endTimestamp)} />
+        <Metric label="Source" value={activity.source ?? "Unknown"} />
+        <p className="footnote">
+          Bid entries reflect the active local bid snapshot only. The chart plots bid-open time and
+          expiry from `bids.json`, without inventing a full bid-by-bid history.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="inspector-body">
       <Metric
         label="Token"
         value={collection.tokensById.get(activity.token_id)?.display_name ?? activity.token_index}
       />
-      <Metric label="Event" value={activity.kind.replace("_", " ")} />
+      <Metric
+        label="Event"
+        value={
+          getActivityMarketType(activity) === "ask"
+            ? activity.is_private
+              ? "Private ask"
+              : "Ask"
+            : activity.is_private
+              ? "Private sale"
+              : "Sale"
+        }
+      />
       <Metric label="Timestamp" value={formatDate(activity.timestamp)} />
-      <Metric label="Price" value={formatValue(activity.price_eth, activity.price_usd, ethUsd, valueMode)} />
+      <Metric
+        label="Price"
+        value={formatValue(activity.price_eth, activity.price_usd, ethUsd, valueMode)}
+      />
       <Metric label="Age" value={formatRelativeAge(activity.timestamp, referenceTimestamp)} />
       <Metric label="Private" value={activity.is_private ? "Yes" : "No"} />
       <p className="footnote">
@@ -1625,11 +1975,20 @@ function NeighborInspector({
   neighbor: NeighborRecord;
   valueMode: ValueMode;
 }) {
+  const rarityBucket = deriveRarityBucket(neighbor.token.rarityPercentile);
+
   return (
     <div className="inspector-body">
       <Metric label="Neighbor" value={neighbor.token.display_name} />
-      <Metric label="Ask" value={formatValue(neighbor.token.current_ask_eth, undefined, ethUsd, valueMode)} />
-      <Metric label="Prediction" value={formatValue(neighbor.token.prediction_eth, undefined, ethUsd, valueMode)} />
+      <Metric
+        label="Ask"
+        value={formatValue(neighbor.token.current_ask_eth, undefined, ethUsd, valueMode)}
+      />
+      <Metric
+        label="Prediction"
+        value={formatValue(neighbor.token.prediction_eth, undefined, ethUsd, valueMode)}
+      />
+      <Metric label="Rarity bucket" value={rarityBucket?.label ?? "N/A"} />
       <Metric label="Rarity gap" value={formatDistance(neighbor.rarityGap)} />
       <p className="footnote">
         {neighbor.sharedTraitNames.length > 0
