@@ -31,8 +31,7 @@ This rebuilds the app and copies the production output into `docs/`, which is th
 
 This repo includes:
 
-- `.github/workflows/deploy-pages.yml` to build and deploy the Pages artifact from `docs/`
-- `.github/workflows/verify-docs-snapshot.yml` to fail CI when committed `docs/` is stale
+- `.github/workflows/verify-docs-snapshot.yml` to fail PR CI when committed `docs/` is stale
 - a small guard in `index.html` that redirects GitHub Pages traffic from the raw repo root to `docs/` if Pages is ever misconfigured to serve the source tree again
 
-The preferred Pages source is still `GitHub Actions`, but the repo-level fallback keeps the site from going blank if that setting drifts.
+GitHub Pages should be configured to deploy from the `main` branch using the `/docs` folder. With that setup, the committed `docs/` snapshot is the deployed site and GitHub's built-in Pages workflow is the only deployment run you should see after pushes to `main`.
