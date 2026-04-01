@@ -10,6 +10,10 @@
   --accent-soft: rgba(180, 87, 45, 0.12);
   --green: #2d6f55;
   --green-soft: rgba(45, 111, 85, 0.14);
+  --blue: #2b5f8a;
+  --blue-soft: rgba(43, 95, 138, 0.14);
+  --gold: #8b6513;
+  --gold-soft: rgba(139, 101, 19, 0.16);
   --shadow: 0 20px 45px rgba(49, 37, 20, 0.14);
   font-family: "Avenir Next", "Segoe UI", sans-serif;
 }
@@ -253,6 +257,13 @@ button {
   font-size: 1.2rem;
 }
 
+.token-fallback-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
 .market-band {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -313,6 +324,26 @@ button {
   color: var(--muted);
 }
 
+.legend-pill.sale {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.legend-pill.ask {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.legend-pill.bid {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.legend-pill.private {
+  background: rgba(78, 69, 55, 0.08);
+  color: var(--muted);
+}
+
 .timeline-chart,
 .regime-chart {
   width: 100%;
@@ -333,20 +364,37 @@ button {
 }
 
 .timeline-dot {
-  fill: var(--accent);
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease;
 }
 
-.timeline-dot.private {
+.timeline-dot.sale {
   fill: var(--green);
 }
 
+.timeline-dot.ask {
+  fill: var(--accent);
+}
+
+.timeline-dot.bid {
+  fill: var(--blue);
+}
+
+.timeline-dot.private {
+  opacity: 0.58;
+  stroke: rgba(31, 28, 23, 0.24);
+  stroke-width: 2;
+}
+
 .timeline-dot.aggregate {
+  opacity: 0.82;
   fill: rgba(31, 28, 23, 0.76);
 }
 
 .timeline-dot.selected {
   stroke: rgba(31, 28, 23, 0.35);
   stroke-width: 3;
+  opacity: 1;
 }
 
 .timeline-list,
@@ -375,6 +423,116 @@ button {
   display: grid;
   justify-items: end;
   gap: 4px;
+}
+
+.neighborhood-map-card {
+  display: grid;
+  gap: 12px;
+}
+
+.neighborhood-map {
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at center, rgba(180, 87, 45, 0.08), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(246, 239, 228, 0.82));
+}
+
+.map-caption {
+  display: grid;
+  gap: 4px;
+}
+
+.map-caption small,
+.map-label {
+  color: var(--muted);
+}
+
+.map-axis {
+  stroke: rgba(78, 69, 55, 0.22);
+  stroke-width: 1.5;
+}
+
+.map-label,
+.map-selected-label,
+.map-inspected-label {
+  font-size: 13px;
+}
+
+.map-selected-label,
+.map-inspected-label {
+  fill: var(--ink);
+  font-weight: 600;
+}
+
+.map-node {
+  stroke: rgba(31, 28, 23, 0.14);
+  stroke-width: 2;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.map-node.neighbor {
+  cursor: pointer;
+}
+
+.map-node.selected {
+  fill: rgba(31, 28, 23, 0.84);
+  stroke: rgba(255, 255, 255, 0.82);
+  stroke-width: 3;
+}
+
+.map-node.inspected {
+  stroke: rgba(31, 28, 23, 0.74);
+  stroke-width: 3;
+}
+
+.rarity-pill,
+.rarity-tone-elite,
+.rarity-tone-rare,
+.rarity-tone-mid,
+.rarity-tone-common {
+  border: 0;
+}
+
+.rarity-pill.rarity-tone-elite,
+.legend-pill.rarity-tone-elite {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.rarity-pill.rarity-tone-rare,
+.legend-pill.rarity-tone-rare {
+  background: rgba(180, 87, 45, 0.16);
+  color: var(--accent);
+}
+
+.rarity-pill.rarity-tone-mid,
+.legend-pill.rarity-tone-mid {
+  background: rgba(78, 69, 55, 0.1);
+  color: var(--muted);
+}
+
+.rarity-pill.rarity-tone-common,
+.legend-pill.rarity-tone-common {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.map-node.neighbor.rarity-tone-elite {
+  fill: #c9972c;
+}
+
+.map-node.neighbor.rarity-tone-rare {
+  fill: var(--accent);
+}
+
+.map-node.neighbor.rarity-tone-mid {
+  fill: rgba(102, 93, 80, 0.78);
+}
+
+.map-node.neighbor.rarity-tone-common {
+  fill: var(--blue);
 }
 
 .trait-table {
@@ -557,6 +715,11 @@ button {
   .trait-table-row {
     grid-template-columns: 28px 1fr;
     align-items: start;
+  }
+
+  .token-fallback-meta {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .trait-table-row > span:nth-child(n + 3) {

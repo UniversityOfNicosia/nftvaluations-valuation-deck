@@ -10,14 +10,22 @@ test("captures required Fidenza screenshots", async ({ page }) => {
 
   await page.getByRole("button", { name: /open workbench/i }).click();
   await expect(page.getByRole("heading", { name: /fidenza valuation workbench/i })).toBeVisible();
+  await expect(page.getByText(/sales \d+/i)).toBeVisible();
+  await expect(page.getByText(/asks \d+/i)).toBeVisible();
+  await expect(page.getByText(/bids \d+/i)).toBeVisible();
+  await expect(page.getByText(/bid markers use active bid start times/i)).toBeVisible();
+  await expect(page.getByText(/rarity bucket/i)).toBeVisible();
   await page.screenshot({
     fullPage: true,
     path: "artifacts/playwright/fidenza-token-239.png",
   });
 
   await page.getByRole("button", { name: "Neighborhood" }).click();
-  await page.getByRole("button", { name: "Rarity" }).click();
   await expect(page.getByText(/neighborhoods are computed locally/i)).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: /neighborhood similarity map for fidenza #239/i }),
+  ).toBeVisible();
+  await expect(page.getByText(/click plotted neighbors to inspect/i)).toBeVisible();
   await page.screenshot({
     fullPage: true,
     path: "artifacts/playwright/fidenza-neighborhood.png",
