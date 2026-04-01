@@ -10,7 +10,7 @@ import type {
   TokenWithNumber,
 } from "../data/types.ts";
 
-export type RarityBucketTone = "elite" | "rare" | "mid" | "common";
+export type RarityBucketTone = "grail" | "legendary" | "rare" | "uncommon" | "common";
 
 export type RarityBucket = {
   label: "Top 1%" | "Top 5%" | "Top 10%" | "Top 25%" | "Mid" | "Common";
@@ -35,11 +35,11 @@ const rarityBuckets: Array<{
   label: RarityBucket["label"];
   tone: RarityBucketTone;
 }> = [
-  { maxPercentile: 0.01, label: "Top 1%", tone: "elite" },
-  { maxPercentile: 0.05, label: "Top 5%", tone: "elite" },
+  { maxPercentile: 0.01, label: "Top 1%", tone: "grail" },
+  { maxPercentile: 0.05, label: "Top 5%", tone: "legendary" },
   { maxPercentile: 0.1, label: "Top 10%", tone: "rare" },
   { maxPercentile: 0.25, label: "Top 25%", tone: "rare" },
-  { maxPercentile: 0.75, label: "Mid", tone: "mid" },
+  { maxPercentile: 0.75, label: "Mid", tone: "uncommon" },
   { maxPercentile: Number.POSITIVE_INFINITY, label: "Common", tone: "common" },
 ];
 
@@ -151,8 +151,10 @@ function clampCoordinate(value: number) {
   return Math.max(-1, Math.min(1, value));
 }
 
-function getNeighborhoodValueAnchor(token: TokenWithNumber, mode: NeighborhoodMode) {
-  if (mode === "trait") {
+export type ValuationModel = "nfti" | "adjusted-floor";
+
+function getNeighborhoodValueAnchor(token: TokenWithNumber, valuationModel: ValuationModel) {
+  if (valuationModel === "nfti") {
     return token.prediction_eth ?? token.adjusted_floor_eth ?? token.current_ask_eth ?? 0;
   }
   return token.adjusted_floor_eth ?? token.prediction_eth ?? token.current_ask_eth ?? 0;
@@ -194,10 +196,11 @@ export function deriveNeighbors(
         1000 -
         rarityGap -
         Math.abs((candidate.adjusted_floor_eth ?? 0) - (token.adjusted_floor_eth ?? 0));
+      const score = mode === "trait" ? traitScore : rarityScore;
 
       return {
         token: candidate,
-        score: mode === "trait" ? traitScore : rarityScore,
+        score,
         sharedTraitCount: sharedTraitIds.length,
         sharedTraitNames,
         rarityGap,
@@ -211,10 +214,11 @@ export function buildNeighborhoodPlot(
   selectedToken: TokenWithNumber,
   neighbors: NeighborRecord[],
   mode: NeighborhoodMode,
+  valuationModel: ValuationModel = "nfti",
 ): NeighborhoodPlotPoint[] {
-  const baseValue = getNeighborhoodValueAnchor(selectedToken, mode);
+  const baseValue = getNeighborhoodValueAnchor(selectedToken, valuationModel);
   const valueSpreads = neighbors.map((neighbor) =>
-    Math.abs(getNeighborhoodValueAnchor(neighbor.token, mode) - baseValue),
+    Math.abs(getNeighborhoodValueAnchor(neighbor.token, valuationModel) - baseValue),
   );
   const raritySpreads = neighbors.map((neighbor) =>
     Math.abs((selectedToken.rarityPercentile ?? 1) - (neighbor.token.rarityPercentile ?? 1)),
@@ -246,7 +250,7 @@ export function buildNeighborhoodPlot(
         tokenNumber: neighbor.token.tokenNumber,
         label: neighbor.token.display_name,
         x: clampCoordinate(
-          (getNeighborhoodValueAnchor(neighbor.token, mode) - baseValue) / maxValueSpread,
+          (getNeighborhoodValueAnchor(neighbor.token, valuationModel) - baseValue) / maxValueSpread,
         ),
         y: clampCoordinate(
           ((selectedToken.rarityPercentile ?? 1) - (neighbor.token.rarityPercentile ?? 1)) /

@@ -45,6 +45,36 @@ export type CollectionContext = {
   change_floor_pct_90d?: number;
   change_floor_pct_180d?: number;
   change_floor_pct_365d?: number;
+  change_listed_pct_1d?: number;
+  change_listed_pct_7d?: number;
+  change_listed_pct_30d?: number;
+  change_listed_pct_90d?: number;
+  change_listed_pct_180d?: number;
+  change_listed_pct_365d?: number;
+  change_af_market_cap_pct_1d?: number;
+  change_af_market_cap_pct_7d?: number;
+  change_af_market_cap_pct_30d?: number;
+  change_af_market_cap_pct_90d?: number;
+  change_af_market_cap_pct_180d?: number;
+  change_af_market_cap_pct_365d?: number;
+  change_nfti_market_cap_pct_1d?: number;
+  change_nfti_market_cap_pct_7d?: number;
+  change_nfti_market_cap_pct_30d?: number;
+  change_nfti_market_cap_pct_90d?: number;
+  change_nfti_market_cap_pct_180d?: number;
+  change_nfti_market_cap_pct_365d?: number;
+  change_median_sale_30d_pct_1d?: number;
+  change_median_sale_30d_pct_7d?: number;
+  change_median_sale_30d_pct_30d?: number;
+  change_median_sale_30d_pct_90d?: number;
+  change_median_sale_30d_pct_180d?: number;
+  change_median_sale_30d_pct_365d?: number;
+  change_sale_volume_30d_pct_1d?: number;
+  change_sale_volume_30d_pct_7d?: number;
+  change_sale_volume_30d_pct_30d?: number;
+  change_sale_volume_30d_pct_90d?: number;
+  change_sale_volume_30d_pct_180d?: number;
+  change_sale_volume_30d_pct_365d?: number;
 };
 
 export type CollectionSnapshot = {
@@ -169,20 +199,23 @@ export type TraitSupport = {
   ask_floor_eth?: number;
 };
 
-export type TraitAnnotationClass = "Positive" | "Neutral" | "Grail" | "Negative";
-export type TraitDriverTier = "Major" | "Supporting" | "Not";
+export type TraitAnnotationClass = "Grail" | "Positive" | "Neutral" | "Negative";
+export type TraitDriverTier = "Major driver" | "Supporting driver" | "Not a driver";
 
 export type TraitAnnotation = {
   property_id: number;
   class?: TraitAnnotationClass;
   driver_tier?: TraitDriverTier;
-  note?: string;
+  rationale?: string;
 };
 
-export type TraitAnnotationFile = {
-  version: 1;
-  traits: TraitAnnotation[];
+export type TraitClassificationRecord = {
+  class: TraitAnnotationClass;
+  driver_tier: TraitDriverTier;
+  rationale: string;
 };
+
+export type TraitClassificationFile = Record<string, TraitClassificationRecord>;
 
 export type CollectionData = {
   summary: CollectionSummary;

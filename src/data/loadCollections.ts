@@ -99,7 +99,52 @@ const optionalFileImporters = {
       import: "default",
     }),
   },
+  "trait_classification.by_property_id.json": {
+    ...import.meta.glob("../../*/trait_classification.by_property_id.json", { import: "default" }),
+    ...import.meta.glob("../../*/data/trait_classification.by_property_id.json", { import: "default" }),
+  },
 };
+
+const tokenSnapshotImporters: Record<string, () => Promise<unknown>> = {
+  ...import.meta.glob("../../*/token_snapshots/*.json", { import: "default" }),
+  ...import.meta.glob("../../*/data/token_snapshots/*.json", { import: "default" }),
+};
+
+export type TokenSnapshotPoint = {
+  timestamp: number;
+  eth_usd: number;
+  adjusted_floor_eth: number;
+  nfti_eth: number;
+};
+
+export async function loadTokenSnapshots(
+  slug: string,
+  tokenId: number,
+): Promise<TokenSnapshotPoint[]> {
+  const entry = Object.entries(tokenSnapshotImporters).find(([path]) => {
+    const slugMatch = getSlugFromPath(path);
+    return slugMatch === slug && path.includes(`/${tokenId}.json`);
+  });
+  if (!entry) return [];
+  try {
+    const raw = (await entry[1]()) as {
+      columns: string[];
+      rows: Array<Array<number>>;
+    };
+    const tsIdx = raw.columns.indexOf("timestamp");
+    const euIdx = raw.columns.indexOf("eth_usd");
+    const afIdx = raw.columns.indexOf("adjusted_floor_eth");
+    const niIdx = raw.columns.indexOf("nfti_eth");
+    return raw.rows.map((row) => ({
+      timestamp: row[tsIdx],
+      eth_usd: row[euIdx],
+      adjusted_floor_eth: row[afIdx],
+      nfti_eth: row[niIdx],
+    }));
+  } catch {
+    return [];
+  }
+}
 
 function getSlugFromPath(path: string) {
   const match = path.match(/^\.\.\/\.\.\/([^/]+)\//);
@@ -224,12 +269,39 @@ export async function loadCollection(slug: string): Promise<CollectionData> {
   const traitSupport = [...(fileMap["trait_support.json"] as TraitSupport[])].sort(
     (left, right) => right.token_count - left.token_count,
   );
-  const traitAnnotationImporter = findModule(optionalFileImporters["trait_annotations.json"], slug);
-  const rawTraitAnnotations = traitAnnotationImporter ? await traitAnnotationImporter() : undefined;
-  const traitAnnotationFile = rawTraitAnnotations as TraitAnnotationFile | TraitAnnotation[] | undefined;
-  const traitAnnotations = Array.isArray(traitAnnotationFile)
-    ? traitAnnotationFile
-    : traitAnnotationFile?.traits ?? [];
+  let traitAnnotations: TraitAnnotation[] = [];
+
+  const classificationImporter = findModule(optionalFileImporters["trait_classification.by_property_id.json"], slug);
+  if (classificationImporter) {
+    try {
+      const rawClassification = await classificationImporter();
+      const classificationFile = rawClassification as Record<string, { class: string; driver_tier: string; rationale: string }> | undefined;
+      if (classificationFile && typeof classificationFile === "object" && !Array.isArray(classificationFile)) {
+        const entries = Object.entries(classificationFile);
+        if (entries.length > 0 && entries[0][1]?.class) {
+          traitAnnotations = entries.map(([key, value]) => ({
+            property_id: Number(key),
+            class: value.class as TraitAnnotation["class"],
+            driver_tier: value.driver_tier as TraitAnnotation["driver_tier"],
+            rationale: value.rationale,
+          }));
+        }
+      }
+    } catch {
+      // classification file failed to load, fall through
+    }
+  }
+
+  if (traitAnnotations.length === 0) {
+    const traitAnnotationImporter = findModule(optionalFileImporters["trait_annotations.json"], slug);
+    if (traitAnnotationImporter) {
+      const rawTraitAnnotations = await traitAnnotationImporter();
+      const traitAnnotationFile = rawTraitAnnotations as { version: 1; traits: TraitAnnotation[] } | TraitAnnotation[] | undefined;
+      traitAnnotations = Array.isArray(traitAnnotationFile)
+        ? traitAnnotationFile
+        : traitAnnotationFile?.traits ?? [];
+    }
+  }
 
   const tokensById = new Map(tokens.map((token) => [token.token_id, token]));
   const tokensByNumber = new Map(tokens.map((token) => [token.tokenNumber, token]));

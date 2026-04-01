@@ -16,7 +16,7 @@ export function formatValue(
   mode: ValueMode,
 ) {
   if (ethValue === undefined && usdValue === undefined) {
-    return "N/A";
+    return "—";
   }
 
   const resolvedEth = ethValue ?? (usdValue !== undefined ? usdValue / ethUsd : undefined);
@@ -28,21 +28,21 @@ export function formatValue(
 
   switch (mode) {
     case "eth":
-      return ethText ?? "N/A";
+      return ethText ?? "—";
     case "usd":
-      return usdText ?? "N/A";
+      return usdText ?? "—";
     case "usd-eth":
       return [usdText, ethText].filter(Boolean).join(" / ");
     case "eth-usd":
       return [ethText, usdText].filter(Boolean).join(" / ");
     default:
-      return ethText ?? usdText ?? "N/A";
+      return ethText ?? usdText ?? "—";
   }
 }
 
 export function formatPercent(value: number | undefined, digits = 1) {
   if (value === undefined) {
-    return "N/A";
+    return "—";
   }
   return `${new Intl.NumberFormat("en-US", {
     maximumFractionDigits: digits,
@@ -52,7 +52,7 @@ export function formatPercent(value: number | undefined, digits = 1) {
 
 export function formatDate(timestamp: number | undefined) {
   if (!timestamp) {
-    return "N/A";
+    return "—";
   }
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -61,9 +61,22 @@ export function formatDate(timestamp: number | undefined) {
   }).format(new Date(timestamp * 1000));
 }
 
+export function formatDateTime(timestamp: number | undefined) {
+  if (!timestamp) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp * 1000));
+}
+
 export function formatCompactDate(timestamp: number | undefined) {
   if (!timestamp) {
-    return "N/A";
+    return "—";
   }
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -73,14 +86,14 @@ export function formatCompactDate(timestamp: number | undefined) {
 
 export function formatDistance(value: number | undefined) {
   if (value === undefined) {
-    return "N/A";
+    return "—";
   }
   return `${formatNumber(value, value >= 10 ? 1 : 2)} pts`;
 }
 
 export function formatRelativeAge(timestamp: number | undefined, referenceTimestamp: number) {
   if (!timestamp) {
-    return "N/A";
+    return "—";
   }
 
   const seconds = Math.max(referenceTimestamp - timestamp, 0);
