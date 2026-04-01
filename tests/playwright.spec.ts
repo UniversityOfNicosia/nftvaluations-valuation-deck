@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test("captures required Fidenza screenshots", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /repo-local collection decks/i })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /evidence-first collection decks/i }),
+  ).toBeVisible();
   await page.screenshot({
     fullPage: true,
     path: "artifacts/playwright/fidenza-root.png",
@@ -14,7 +16,7 @@ test("captures required Fidenza screenshots", async ({ page }) => {
   await expect(page.getByText(/asks \d+/i)).toBeVisible();
   await expect(page.getByText(/bids \d+/i)).toBeVisible();
   await expect(page.getByText(/bid markers use active bid start times/i)).toBeVisible();
-  await expect(page.getByText(/rarity bucket/i)).toBeVisible();
+  await expect(page.getByText(/token spotlight/i)).toBeVisible();
   await page.screenshot({
     fullPage: true,
     path: "artifacts/playwright/fidenza-token-239.png",

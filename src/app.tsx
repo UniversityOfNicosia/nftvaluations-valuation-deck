@@ -91,6 +91,13 @@ type TimelineLegend = {
   privateCount: number;
   tokenCount: number;
 };
+type ArtworkConfig = {
+  chainId: number;
+  contractAddress: string;
+  featuredTokenIndex: string;
+  featuredTokenNumber: number;
+};
+type SignalTone = "warm" | "cool" | "positive" | "muted" | "rare";
 
 const timelineScopeOptions: Array<{ label: string; value: TimelineScope }> = [
   { label: "Token only", value: "token" },
@@ -105,6 +112,18 @@ const timelineRangeOptions: Array<{ label: string; value: TimelineRange }> = [
 ];
 const neighborhoodSizeOptions: NeighborhoodSizeOption[] = [10, 20, 50, 100, "max"];
 const traitPreviewCount = 6;
+const artworkConfigBySlug: Record<string, ArtworkConfig> = {
+  "fidenza-by-tyler-hobbs": {
+    chainId: 1,
+    contractAddress: "0xa7d8d9ef8d8ce8992df33d8b8cf4aebabd5bd270",
+    featuredTokenIndex: "78000239",
+    featuredTokenNumber: 239,
+  },
+};
+
+function cx(...classes: Array<string | false | null | undefined>) {
+  return classes.filter(Boolean).join(" ");
+}
 
 function parseRoute(): RouteState {
   const hash = window.location.hash.replace(/^#/, "");
@@ -310,6 +329,78 @@ function getRarityToneClass(tone?: string) {
   return tone ? `rarity-tone-${tone}` : "";
 }
 
+function getArtworkConfig(slug: string) {
+  return artworkConfigBySlug[slug];
+}
+
+function getDefaultTokenNumber(slug: string) {
+  return getArtworkConfig(slug)?.featuredTokenNumber ?? 1;
+}
+
+function getCollectionArtworkUrl(slug: string) {
+  const artwork = getArtworkConfig(slug);
+  if (!artwork) {
+    return undefined;
+  }
+  return `https://media-proxy.artblocks.io/${artwork.chainId}/${artwork.contractAddress}/${artwork.featuredTokenIndex}.png`;
+}
+
+function getTokenImageUrl(slug: string, tokenIndex: string | number) {
+  const artwork = getArtworkConfig(slug);
+  if (!artwork) {
+    return undefined;
+  }
+  return `https://media-proxy.artblocks.io/${artwork.chainId}/${artwork.contractAddress}/${tokenIndex}.png`;
+}
+
+function getTokenExternalUrl(slug: string, tokenIndex: string | number) {
+  const artwork = getArtworkConfig(slug);
+  if (!artwork) {
+    return undefined;
+  }
+  return `https://www.artblocks.io/token/${artwork.chainId}/${artwork.contractAddress}/${tokenIndex}`;
+}
+
+function buildTokenSignals(
+  token: TokenWithNumber,
+  tokenBids: Bid[],
+  referenceTimestamp: number,
+  rarityBucket: ReturnType<typeof deriveRarityBucket>,
+) {
+  const signals: Array<{ label: string; tone: SignalTone }> = [];
+  const recentSaleAge = token.last_single_sale_ts
+    ? referenceTimestamp - token.last_single_sale_ts
+    : undefined;
+
+  if (recentSaleAge !== undefined && recentSaleAge <= 180 * 24 * 60 * 60) {
+    signals.push({
+      label: `Recent sale ${formatRelativeAge(token.last_single_sale_ts, referenceTimestamp)}`,
+      tone: "positive",
+    });
+  }
+  if (token.current_ask_eth !== undefined) {
+    signals.push({ label: "Active ask", tone: "warm" });
+  }
+  if (tokenBids[0]?.price_eth !== undefined) {
+    signals.push({ label: "Token bid live", tone: "cool" });
+  }
+  if (rarityBucket) {
+    signals.push({
+      label: rarityBucket.label,
+      tone: rarityBucket.tone === "elite" ? "rare" : "cool",
+    });
+  }
+  if (
+    token.current_ask_eth !== undefined &&
+    token.prediction_eth !== undefined &&
+    token.current_ask_eth > token.prediction_eth * 1.2
+  ) {
+    signals.push({ label: "Ask above model", tone: "muted" });
+  }
+
+  return signals.slice(0, 5);
+}
+
 function LandingPage({
   collections,
 }: {
@@ -318,13 +409,22 @@ function LandingPage({
   return (
     <main className="landing-shell">
       <div className="hero-panel">
-        <p className="eyebrow">Static valuation workbench</p>
-        <h1>Repo-local collection decks, with no backend in the loop.</h1>
-        <p className="hero-copy">
-          Collection discovery is build-time only. Each deck hydrates compact repo JSON,
-          keeps price context local, and opens directly into a focused valuation
-          workbench.
-        </p>
+        <div className="hero-grid">
+          <div>
+            <p className="eyebrow">Static valuation workbench</p>
+            <h1>Evidence-first collection decks, rebuilt around the art.</h1>
+            <p className="hero-copy">
+              Repo-local JSON still drives the whole experience, but the interface now
+              leads with artwork, valuation bands, comps, and market context instead of
+              feeling like a spreadsheet shell.
+            </p>
+          </div>
+          <div className="hero-copy-block">
+            <span className="pill muted">Static deploy</span>
+            <span className="pill muted">Repo JSON only</span>
+            <span className="pill muted">Image-led review</span>
+          </div>
+        </div>
       </div>
       <div className="collection-grid">
         {collections.map((collection) => (
@@ -334,41 +434,49 @@ function LandingPage({
             onClick={() =>
               updateRoute(
                 collection.slug,
-                new URLSearchParams({ token: "239" }),
+                new URLSearchParams({
+                  token: String(getDefaultTokenNumber(collection.slug)),
+                }),
               )
             }
             type="button"
           >
-            <div className="collection-card-head">
-              <div>
-                <p className="eyebrow">{collection.artist}</p>
-                <h2>{collection.title}</h2>
-              </div>
-              <span className="pill">Open workbench</span>
+            <div className="collection-card-art">
+              <CollectionArtwork collection={collection} />
             </div>
-            <div className="collection-card-stats">
-              <Metric
-                label="Collection floor"
-                value={formatValue(
-                  collection.floorEth,
-                  undefined,
-                  collection.ethUsd,
-                  "eth-usd",
-                )}
-              />
-              <Metric
-                label="Top collection bid"
-                value={formatValue(
-                  collection.topBidEth,
-                  undefined,
-                  collection.ethUsd,
-                  "eth-usd",
-                )}
-              />
-              <Metric
-                label="Snapshot"
-                value={formatDate(collection.snapshotTs)}
-              />
+            <div className="collection-card-body">
+              <div className="collection-card-head">
+                <div>
+                  <p className="eyebrow">{collection.artist}</p>
+                  <h2>{collection.title}</h2>
+                </div>
+                <span className="pill">Open workbench</span>
+              </div>
+              <p className="hero-copy">
+                Open the deck to inspect token-level asks, local trait support, market
+                history, and neighborhood comps in one place.
+              </p>
+              <div className="collection-card-stats">
+                <Metric
+                  label="Collection floor"
+                  value={formatValue(
+                    collection.floorEth,
+                    undefined,
+                    collection.ethUsd,
+                    "eth-usd",
+                  )}
+                />
+                <Metric
+                  label="Top collection bid"
+                  value={formatValue(
+                    collection.topBidEth,
+                    undefined,
+                    collection.ethUsd,
+                    "eth-usd",
+                  )}
+                />
+                <Metric label="Snapshot" value={formatDate(collection.snapshotTs)} />
+              </div>
             </div>
           </button>
         ))}
@@ -501,14 +609,49 @@ function Workbench({
   return (
     <main className="workbench-shell">
       <header className="workbench-header">
-        <div>
+        <div className="header-copy-block">
           <button className="back-link" onClick={() => (window.location.hash = "/")} type="button">
             Collection index
           </button>
           <p className="eyebrow">{collection.summary.artist}</p>
           <h1>{collection.summary.title} valuation workbench</h1>
+          <p className="hero-copy">
+            Token art, valuation bands, repo-local market evidence, and trait-driven comp
+            context in a single review surface.
+          </p>
         </div>
-        <ValueModeToggle valueMode={valueMode} onChange={setValueMode} />
+        <div className="header-actions">
+          <div className="header-glance">
+            <Metric
+              label="Collection floor"
+              value={formatValue(
+                collection.context.floor_eth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+            <Metric
+              label="Top bid"
+              value={formatValue(
+                collection.context.top_bid_eth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+            <Metric
+              label="30d median"
+              value={formatValue(
+                collection.context.median_sale_eth_30d,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+          </div>
+          <ValueModeToggle valueMode={valueMode} onChange={setValueMode} />
+        </div>
       </header>
       <section className="workbench-grid">
         <TokenWorkbenchPanels
@@ -689,17 +832,31 @@ function TokenWorkbenchPanels({
       visibleNeighborNumbers.has(tokenNumber),
     );
   }, [combinedTraits, visibleNeighbors]);
+  const tokenSignals = useMemo(
+    () =>
+      buildTokenSignals(
+        selectedToken,
+        tokenBids,
+        referenceTimestamp,
+        selectedRarityBucket,
+      ),
+    [referenceTimestamp, selectedRarityBucket, selectedToken, tokenBids],
+  );
+  const selectedTokenUrl = getTokenExternalUrl(
+    collection.summary.slug,
+    selectedToken.token_index,
+  );
 
   return (
     <>
-      <aside className="panel left-column">
-        <section className="token-selector">
+      <aside className="left-column">
+        <section className="panel token-selector-panel">
           <div className="token-selector-head">
             <div>
               <p className="eyebrow">Token selector</p>
               <h2>{selectedToken.display_name}</h2>
             </div>
-            <span className="pill">URL state on</span>
+            <span className="pill muted">Shareable URL state</span>
           </div>
           <label className="search-box">
             <span>Jump to token</span>
@@ -717,110 +874,161 @@ function TokenWorkbenchPanels({
                 onClick={() => onSelectToken(token.tokenNumber)}
                 type="button"
               >
-                <span>{token.display_name}</span>
-                <small>
-                  {formatValue(
-                    token.current_ask_eth,
-                    undefined,
-                    collection.metadata.eth_usd,
-                    "eth",
-                  )}
-                </small>
+                <strong>{token.display_name}</strong>
+                <div className="chip-copy">
+                  <span>
+                    {formatValue(
+                      token.current_ask_eth,
+                      undefined,
+                      collection.metadata.eth_usd,
+                      "eth",
+                    )}
+                  </span>
+                  <small>Rank {token.rarity_rank ?? "N/A"}</small>
+                </div>
               </button>
             ))}
           </div>
         </section>
 
-        <section className="token-card">
-          <TokenFallback rarityBucket={selectedRarityBucket} token={selectedToken} />
-          <div className="market-band">
-            <Metric
-              label="Bid"
-              value={formatValue(
-                marketBand.topBidEth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Fair"
-              value={formatValue(
-                marketBand.fairEth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="List"
-              value={formatValue(
-                marketBand.listEth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
+        <section className="panel token-spotlight">
+          <div className="token-stage">
+            <div className="token-stage-top">
+              <span className="eyebrow">Token spotlight</span>
+              {selectedTokenUrl ? (
+                <a className="art-link" href={selectedTokenUrl} rel="noreferrer" target="_blank">
+                  Open on Art Blocks
+                </a>
+              ) : null}
+            </div>
+            <TokenArtwork
+              alt={selectedToken.display_name}
+              rarityBucket={selectedRarityBucket}
+              slug={collection.summary.slug}
+              token={selectedToken}
             />
           </div>
-          <div className="token-summary-grid">
-            <Metric
-              label="Adjusted floor"
-              value={formatValue(
-                selectedToken.adjusted_floor_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Base model"
-              value={formatValue(
-                selectedToken.nfti_v2_base_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Trim model"
-              value={formatValue(
-                selectedToken.nfti_v2_trim_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Last sale"
-              value={formatValue(
-                selectedToken.last_single_sale_eth,
-                selectedToken.last_single_sale_usd,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="Rarity rank"
-              value={
-                selectedToken.rarity_rank
-                  ? `${selectedToken.rarity_rank} / ${collection.tokens.length}`
-                  : "N/A"
-              }
-            />
-            <Metric
-              label="Rarity bucket"
-              value={selectedRarityBucket?.label ?? "N/A"}
-            />
-            <Metric label="Minted" value={formatDate(selectedToken.mint_ts)} />
+          <div className="token-stage-body">
+            <div className="token-title-row">
+              <div>
+                <h2>{selectedToken.display_name}</h2>
+                <p className="subdued-copy">
+                  {collection.summary.title} / {collection.summary.artist}
+                </p>
+              </div>
+              <span
+                className={cx(
+                  "pill rarity-pill",
+                  selectedRarityBucket ? getRarityToneClass(selectedRarityBucket.tone) : "",
+                )}
+              >
+                {selectedRarityBucket?.label ?? "Rarity pending"}
+              </span>
+            </div>
+            <div className="token-pill-list">
+              {tokenSignals.map((signal) => (
+                <SignalPill key={signal.label} label={signal.label} tone={signal.tone} />
+              ))}
+            </div>
+            <div className="market-band">
+              <Metric
+                label="Bid"
+                value={formatValue(
+                  marketBand.topBidEth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="Fair"
+                value={formatValue(
+                  marketBand.fairEth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="List"
+                value={formatValue(
+                  marketBand.listEth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+            </div>
+            <div className="token-summary-grid">
+              <Metric
+                label="Adjusted floor"
+                value={formatValue(
+                  selectedToken.adjusted_floor_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="Base model"
+                value={formatValue(
+                  selectedToken.nfti_v2_base_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="Trim model"
+                value={formatValue(
+                  selectedToken.nfti_v2_trim_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="Last sale"
+                value={formatValue(
+                  selectedToken.last_single_sale_eth,
+                  selectedToken.last_single_sale_usd,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+              <Metric
+                label="Last sale age"
+                value={formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}
+              />
+              <Metric
+                label="Rarity rank"
+                value={
+                  selectedToken.rarity_rank
+                    ? `${selectedToken.rarity_rank} / ${collection.tokens.length}`
+                    : "N/A"
+                }
+              />
+              <Metric label="Minted" value={formatDate(selectedToken.mint_ts)} />
+              <Metric
+                label="Current ask"
+                value={formatValue(
+                  selectedToken.current_ask_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}
+              />
+            </div>
           </div>
         </section>
 
-        <section className="context-card">
+        <section className="panel context-card">
           <div className="section-head">
             <div>
               <p className="eyebrow">Collection context</p>
-              <h2>Live deck anchors</h2>
+              <h2>Deck anchors</h2>
             </div>
+            <span className="pill muted">Context, not verdict</span>
           </div>
           <div className="context-grid">
             <Metric
@@ -864,92 +1072,81 @@ function TokenWorkbenchPanels({
               label="Floor change 30d"
               value={formatPercent(collection.context.change_floor_pct_30d)}
             />
-            <Metric
-              label="AF market cap"
-              value={formatValue(
-                collection.context.af_market_cap_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <Metric
-              label="NFTi market cap"
-              value={formatValue(
-                collection.context.nfti_market_cap_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
           </div>
           <CollectionRegimeCard
             collection={collection}
             referenceTimestamp={referenceTimestamp}
             valueMode={valueMode}
           />
-          <p className="footnote">
-            AF and NFTi metrics remain contextual only. The workbench does not imply
-            hidden weighting as authoritative.
-          </p>
         </section>
       </aside>
 
-      <section className="panel center-column">
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">Market evidence</p>
-            <h2>Timeline and neighborhood</h2>
+      <section className="center-column">
+        <section className="panel evidence-panel">
+          <div className="section-head">
+            <div>
+              <p className="eyebrow">Market evidence</p>
+              <h2>{activeView === "timeline" ? "Timeline view" : "Neighborhood view"}</h2>
+            </div>
+            <div className="segmented-control">
+              <button
+                className={activeView === "timeline" ? "selected" : ""}
+                onClick={() => onActiveViewChange("timeline")}
+                type="button"
+              >
+                Timeline
+              </button>
+              <button
+                className={activeView === "neighborhood" ? "selected" : ""}
+                onClick={() => onActiveViewChange("neighborhood")}
+                type="button"
+              >
+                Neighborhood
+              </button>
+            </div>
           </div>
-          <div className="segmented-control">
-            <button className={activeView === "timeline" ? "selected" : ""} onClick={() => onActiveViewChange("timeline")} type="button">
-              Timeline
-            </button>
-            <button className={activeView === "neighborhood" ? "selected" : ""} onClick={() => onActiveViewChange("neighborhood")} type="button">
-              Neighborhood
-            </button>
-          </div>
-        </div>
 
-        {activeView === "timeline" ? (
-          <TimelinePanel
-            collection={collection}
-            entries={timelineData.entries}
-            ethUsd={collection.metadata.eth_usd}
-            inspectedEntry={inspectedTimelineEntry}
-            legend={timelineData.legend}
-            neighborhoodShownCount={visibleNeighbors.length}
-            onInspect={(entry) => setInspectedTimelineKey(getTimelineEntryKey(entry))}
-            onRangeChange={setTimelineRange}
-            onScopeChange={setTimelineScope}
-            range={timelineRange}
-            scope={timelineScope}
-            valueMode={valueMode}
-          />
-        ) : (
+          {activeView === "timeline" ? (
+            <TimelinePanel
+              collection={collection}
+              entries={timelineData.entries}
+              ethUsd={collection.metadata.eth_usd}
+              inspectedEntry={inspectedTimelineEntry}
+              legend={timelineData.legend}
+              neighborhoodShownCount={visibleNeighbors.length}
+              onInspect={(entry) => setInspectedTimelineKey(getTimelineEntryKey(entry))}
+              onRangeChange={setTimelineRange}
+              onScopeChange={setTimelineScope}
+              range={timelineRange}
+              scope={timelineScope}
+              valueMode={valueMode}
+            />
+          ) : (
           <NeighborhoodPanel
+            collectionSlug={collection.summary.slug}
             ethUsd={collection.metadata.eth_usd}
             inspectedNeighbor={inspectedNeighbor}
             mode={neighborhoodMode}
             neighbors={visibleNeighbors}
-            onInspect={(neighbor) => setInspectedNeighborId(neighbor.token.token_id)}
-            onModeChange={onNeighborhoodModeChange}
-            onSizeChange={setNeighborhoodSize}
-            selectedToken={selectedToken}
-            shownCount={visibleNeighbors.length}
-            size={neighborhoodSize}
-            totalCount={allNeighbors.length}
-            valueMode={valueMode}
-          />
-        )}
+              onInspect={(neighbor) => setInspectedNeighborId(neighbor.token.token_id)}
+              onModeChange={onNeighborhoodModeChange}
+              onSizeChange={setNeighborhoodSize}
+              selectedToken={selectedToken}
+              shownCount={visibleNeighbors.length}
+              size={neighborhoodSize}
+              totalCount={allNeighbors.length}
+              valueMode={valueMode}
+            />
+          )}
+        </section>
 
-        <section className="trait-panel">
+        <section className="panel trait-panel">
           <div className="section-head">
             <div>
               <p className="eyebrow">Trait support</p>
-              <h2>Trait row support</h2>
+              <h2>Trait rows and intersections</h2>
             </div>
-            <span className="pill muted">Trait bids hidden in v1</span>
+            <span className="pill muted">Local support only</span>
           </div>
           <div className="trait-table">
             <div className="trait-table-head">
@@ -1041,7 +1238,7 @@ function TokenWorkbenchPanels({
               </div>
               <span className="pill muted">
                 {selectedTraitRows.slice(0, 2).map((trait) => trait.property_name).join(" + ") ||
-                  "Local-only intersections"}
+                  "Local intersections"}
               </span>
             </div>
             {combinedTraits && activeTraits.length >= 2 ? (
@@ -1124,8 +1321,9 @@ function TokenWorkbenchPanels({
                 </>
               ) : (
                 <p className="footnote">
-                  No current overlap beyond the selected token. The box stays conservative and
-                  reports the local intersection result rather than inferring synthetic support.
+                  No current overlap beyond the selected token. The box stays conservative
+                  and reports the exact local intersection result instead of inventing
+                  synthetic support.
                 </p>
               )
             ) : (
@@ -1138,8 +1336,8 @@ function TokenWorkbenchPanels({
         </section>
       </section>
 
-      <aside className="panel right-column">
-        <section className="inspector-card">
+      <aside className="right-column">
+        <section className="panel inspector-card">
           <div className="section-head">
             <div>
               <p className="eyebrow">Inspector</p>
@@ -1157,6 +1355,7 @@ function TokenWorkbenchPanels({
           ) : null}
           {activeView === "neighborhood" && inspectedNeighbor ? (
             <NeighborInspector
+              collectionSlug={collection.summary.slug}
               ethUsd={collection.metadata.eth_usd}
               neighbor={inspectedNeighbor}
               valueMode={valueMode}
@@ -1164,82 +1363,226 @@ function TokenWorkbenchPanels({
           ) : null}
         </section>
 
-        <section className="inspector-card">
+        <section className="panel inspector-card">
           <div className="section-head">
             <div>
-              <p className="eyebrow">Synthesis</p>
-              <h2>Compact decision frame</h2>
+              <p className="eyebrow">Decision synthesis</p>
+              <h2>Bid, fair, and list frame</h2>
             </div>
           </div>
-          <ul className="synthesis-list">
-            <li>
-              Current ask sits at{" "}
-              <strong>
-                {formatValue(
-                  selectedToken.current_ask_eth,
+          <div className="decision-grid">
+            <DecisionCard
+              notes={[
+                `Token support ${formatValue(
+                  marketBand.topBidEth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
-                )}
-              </strong>{" "}
-              against a contextual fair band of{" "}
-              <strong>
-                {formatValue(
-                  selectedToken.prediction_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              </strong>.
-            </li>
-            <li>
-              Token-specific bid depth is capped at{" "}
-              <strong>
-                {formatValue(
-                  tokenBids[0]?.price_eth,
-                  tokenBids[0]?.price_usd,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}
-              </strong>
-              ; collection support sits at{" "}
-              <strong>
-                {formatValue(
+                )}`,
+                `Collection support ${formatValue(
                   collection.context.top_bid_eth,
                   undefined,
                   collection.metadata.eth_usd,
                   valueMode,
-                )}
-              </strong>.
-            </li>
-            <li>
-              Local rarity bucket resolves to{" "}
-              <strong>{selectedRarityBucket?.label ?? "N/A"}</strong> from the token's
-              repo-derived rarity percentile.
-            </li>
-            <li>
-              Neighborhood mode is local-only and defaults to a 50-token comp set. Visual
-              and curated comparables stay disabled placeholders until repo-local sources exist.
-            </li>
-            <li>
-              Trait support rows and combined intersections use conservative token-level overlap.
-              Raw trait bids are present in source data but intentionally muted here.
-            </li>
-          </ul>
+                )}`,
+                `Last sale ${formatRelativeAge(selectedToken.last_single_sale_ts, referenceTimestamp)}`,
+              ]}
+              title="Bid-side"
+              tone="bid"
+              value={formatValue(
+                marketBand.topBidEth ?? collection.context.top_bid_eth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+            <DecisionCard
+              notes={[
+                `Model ${formatValue(
+                  selectedToken.prediction_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+                `Adjusted floor ${formatValue(
+                  selectedToken.adjusted_floor_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+                `Rarity ${selectedRarityBucket?.label ?? "N/A"}`,
+              ]}
+              title="Fair value"
+              tone="fair"
+              value={formatValue(
+                marketBand.fairEth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+            <DecisionCard
+              notes={[
+                `Current ask ${formatValue(
+                  selectedToken.current_ask_eth,
+                  undefined,
+                  collection.metadata.eth_usd,
+                  valueMode,
+                )}`,
+                `Neighborhood set ${visibleNeighbors.length} comps`,
+                `${activeTraits.length} active trait rows`,
+              ]}
+              title="List-side"
+              tone="list"
+              value={formatValue(
+                marketBand.listEth ?? selectedToken.current_ask_eth,
+                undefined,
+                collection.metadata.eth_usd,
+                valueMode,
+              )}
+            />
+          </div>
         </section>
 
-        <section className="inspector-card">
+        <section className="panel inspector-card bids-card">
           <div className="section-head">
             <div>
               <p className="eyebrow">Active bids</p>
               <h2>Collection and token support</h2>
             </div>
           </div>
-          <BidList bids={tokenBids} ethUsd={collection.metadata.eth_usd} title="Token bids" valueMode={valueMode} />
-          <BidList bids={collectionBids} ethUsd={collection.metadata.eth_usd} title="Collection bids" valueMode={valueMode} />
+          <BidList
+            bids={tokenBids}
+            ethUsd={collection.metadata.eth_usd}
+            title="Token bids"
+            valueMode={valueMode}
+          />
+          <BidList
+            bids={collectionBids}
+            ethUsd={collection.metadata.eth_usd}
+            title="Collection bids"
+            valueMode={valueMode}
+          />
         </section>
       </aside>
     </>
+  );
+}
+
+function CollectionArtwork({
+  collection,
+}: {
+  collection: CollectionSummary;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = getCollectionArtworkUrl(collection.slug);
+
+  if (!src || failed) {
+    return <div className="collection-artwork-fallback">{collection.title}</div>;
+  }
+
+  return (
+    <img
+      alt={`${collection.title} artwork preview`}
+      className="collection-artwork"
+      loading="lazy"
+      onError={() => setFailed(true)}
+      src={src}
+    />
+  );
+}
+
+function SignalPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: SignalTone;
+}) {
+  return <span className={cx("signal-pill", tone)}>{label}</span>;
+}
+
+function TokenArtwork({
+  alt,
+  rarityBucket,
+  slug,
+  token,
+}: {
+  alt: string;
+  rarityBucket: ReturnType<typeof deriveRarityBucket>;
+  slug: string;
+  token: TokenWithNumber;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = getTokenImageUrl(slug, token.token_index);
+
+  if (!src || failed) {
+    return <TokenFallback rarityBucket={rarityBucket} token={token} />;
+  }
+
+  return (
+    <div className="token-artwork-frame">
+      <img
+        alt={alt}
+        className="token-artwork"
+        loading="lazy"
+        onError={() => setFailed(true)}
+        src={src}
+      />
+    </div>
+  );
+}
+
+function TokenThumbnail({
+  slug,
+  token,
+}: {
+  slug: string;
+  token: TokenWithNumber;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = getTokenImageUrl(slug, token.token_index);
+
+  if (!src || failed) {
+    return <TokenFallback compact rarityBucket={null} token={token} />;
+  }
+
+  return (
+    <div className="token-thumb-frame">
+      <img
+        alt={token.display_name}
+        className="token-thumb-image"
+        loading="lazy"
+        onError={() => setFailed(true)}
+        src={src}
+      />
+    </div>
+  );
+}
+
+function DecisionCard({
+  notes,
+  title,
+  tone,
+  value,
+}: {
+  notes: string[];
+  title: string;
+  tone: "bid" | "fair" | "list";
+  value: string;
+}) {
+  return (
+    <div className={cx("decision-card", tone)}>
+      <p className="eyebrow">{title}</p>
+      <div className="decision-card-value">{value}</div>
+      <div className="decision-card-notes">
+        {notes.map((note) => (
+          <span className="decision-note" key={note}>
+            {note}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1283,15 +1626,20 @@ function ValueModeToggle({
 }
 
 function TokenFallback({
+  compact = false,
   rarityBucket,
   token,
 }: {
+  compact?: boolean;
   rarityBucket: ReturnType<typeof deriveRarityBucket>;
   token: TokenWithNumber;
 }) {
   const hue = (token.tokenNumber * 29) % 360;
   return (
-    <div className="token-fallback" style={{ "--token-hue": `${hue}` } as CSSProperties}>
+    <div
+      className={cx("token-fallback", compact ? "compact" : "")}
+      style={{ "--token-hue": `${hue}` } as CSSProperties}
+    >
       <svg viewBox="0 0 320 220" aria-hidden="true">
         <defs>
           <linearGradient id={`gradient-${token.token_id}`} x1="0%" y1="0%" x2="100%" y2="100%">
@@ -1315,19 +1663,21 @@ function TokenFallback({
           strokeWidth="28"
         />
       </svg>
-      <div className="token-fallback-copy">
-        <p>{token.display_name}</p>
-        <div className="token-fallback-meta">
-          <span>
-            Local-only fallback visual • rarity rank {token.rarity_rank ?? "N/A"}
-          </span>
-          {rarityBucket ? (
-            <span className={`pill rarity-pill ${getRarityToneClass(rarityBucket.tone)}`}>
-              {rarityBucket.label}
-            </span>
-          ) : null}
+      {!compact ? (
+        <div className="token-fallback-copy">
+          <p>{token.display_name}</p>
+          <div className="token-fallback-meta">
+            <span>Fallback visual / rarity rank {token.rarity_rank ?? "N/A"}</span>
+            {rarityBucket ? (
+              <span className={`pill rarity-pill ${getRarityToneClass(rarityBucket.tone)}`}>
+                {rarityBucket.label}
+              </span>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="token-fallback-tag">{formatTokenNumber(token.tokenNumber)}</div>
+      )}
     </div>
   );
 }
@@ -1513,7 +1863,7 @@ function TimelinePanel({
                         <span>Aggregate lane</span>
                         <small>
                           {formatCompactDate(entry.startTimestamp)} to{" "}
-                          {formatCompactDate(entry.endTimestamp)} • {entry.eventCount} events
+                          {formatCompactDate(entry.endTimestamp)} / {entry.eventCount} events
                         </small>
                       </div>
                       <div className="neighbor-metrics">
@@ -1577,6 +1927,7 @@ function TimelinePanel({
 }
 
 function NeighborhoodPanel({
+  collectionSlug,
   ethUsd,
   inspectedNeighbor,
   mode,
@@ -1590,6 +1941,7 @@ function NeighborhoodPanel({
   totalCount,
   valueMode,
 }: {
+  collectionSlug: string;
   ethUsd: number;
   inspectedNeighbor?: NeighborRecord;
   mode: NeighborhoodMode;
@@ -1772,12 +2124,15 @@ function NeighborhoodPanel({
             type="button"
           >
             <div>
-              <strong>{neighbor.token.display_name}</strong>
+              <TokenThumbnail slug={collectionSlug} token={neighbor.token} />
+              <div className="neighbor-row-copy">
+                <strong>{neighbor.token.display_name}</strong>
               <small>
-                {neighbor.sharedTraitCount} shared traits • rarity gap{" "}
-                {formatDistance(neighbor.rarityGap)} •{" "}
+                {neighbor.sharedTraitCount} shared traits / rarity gap{" "}
+                {formatDistance(neighbor.rarityGap)} /{" "}
                 {deriveRarityBucket(neighbor.token.rarityPercentile)?.label ?? "N/A"}
               </small>
+              </div>
             </div>
             <div className="neighbor-metrics">
               <span>{formatValue(neighbor.token.current_ask_eth, undefined, ethUsd, valueMode)}</span>
@@ -1967,10 +2322,12 @@ function TimelineInspector({
 }
 
 function NeighborInspector({
+  collectionSlug,
   ethUsd,
   neighbor,
   valueMode,
 }: {
+  collectionSlug: string;
   ethUsd: number;
   neighbor: NeighborRecord;
   valueMode: ValueMode;
@@ -1979,6 +2336,12 @@ function NeighborInspector({
 
   return (
     <div className="inspector-body">
+      <TokenArtwork
+        alt={neighbor.token.display_name}
+        rarityBucket={rarityBucket}
+        slug={collectionSlug}
+        token={neighbor.token}
+      />
       <Metric label="Neighbor" value={neighbor.token.display_name} />
       <Metric
         label="Ask"
@@ -1992,7 +2355,7 @@ function NeighborInspector({
       <Metric label="Rarity gap" value={formatDistance(neighbor.rarityGap)} />
       <p className="footnote">
         {neighbor.sharedTraitNames.length > 0
-          ? `Shared traits: ${neighbor.sharedTraitNames.slice(0, 4).join(" • ")}`
+          ? `Shared traits: ${neighbor.sharedTraitNames.slice(0, 4).join(" / ")}`
           : "Rarity neighborhood is based on locally derived rank proximity."}
       </p>
     </div>
@@ -2020,7 +2383,7 @@ function BidList({
           <div key={bid.bid_id} className="bid-row">
             <strong>{formatValue(bid.price_eth, bid.price_usd, ethUsd, valueMode)}</strong>
             <small>
-              {bid.bidder_address ? `${bid.bidder_address.slice(0, 6)}...` : "Unknown bidder"} •
+              {bid.bidder_address ? `${bid.bidder_address.slice(0, 6)}...` : "Unknown bidder"} /
               expires {formatDate(bid.end_ts)}
             </small>
           </div>
