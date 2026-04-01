@@ -1,0 +1,34 @@
+name: Verify Docs Snapshot
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild committed docs snapshot
+        run: npm run build:docs
+
+      - name: Ensure docs snapshot is committed
+        run: |
+          if ! git diff --quiet -- docs; then
+            echo "Committed docs/ is stale. Run npm run build:docs and commit the updated docs snapshot."
+            git status --short docs
+            exit 1
+          fi
