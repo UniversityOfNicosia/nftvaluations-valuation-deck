@@ -1,0 +1,10 @@
+node_modules/
+dist/
+vite.config.js
+vite.config.d.ts
+playwright.config.js
+playwright.config.d.ts
+src/**/*.js
+test-results/
+*.tsbuildinfo
+artifacts/playwright/debug-neighborhood.png
