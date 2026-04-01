@@ -27,8 +27,9 @@ jobs:
 
       - name: Ensure docs snapshot is committed
         run: |
-          if ! git diff --quiet -- docs; then
+          if ! git diff --ignore-cr-at-eol --quiet -- docs; then
             echo "Committed docs/ is stale. Run npm run build:docs and commit the updated docs snapshot."
+            git diff --ignore-cr-at-eol -- docs
             git status --short docs
             exit 1
           fi
