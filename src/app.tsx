@@ -988,23 +988,12 @@ function LandingPage({
 }) {
   return (
     <main className="landing-shell">
-      <div className="hero-panel">
-        <div className="hero-grid">
-          <div>
-            <p className="eyebrow">Static valuation workbench</p>
-            <h1>Evidence-first collection decks, rebuilt around the art.</h1>
-            <p className="hero-copy">
-              Repo-local JSON still drives the whole experience, but the interface now
-              leads with artwork, valuation bands, comps, and market context instead of
-              feeling like a spreadsheet shell.
-            </p>
-          </div>
-          <div className="hero-copy-block">
-            <span className="pill muted">Static deploy</span>
-            <span className="pill muted">Repo JSON only</span>
-            <span className="pill muted">Image-led review</span>
-          </div>
-        </div>
+      <div className="landing-header">
+        <p className="eyebrow">NFT Valuations</p>
+        <h1>Valuation Deck</h1>
+        <p className="landing-subtitle">
+          Evidence-first valuation workbench for NFT collections.
+        </p>
       </div>
       <div className="collection-grid">
         {collections.map((collection) => (
@@ -1025,38 +1014,23 @@ function LandingPage({
               <CollectionArtwork collection={collection} />
             </div>
             <div className="collection-card-body">
-              <div className="collection-card-head">
-                <div>
-                  <p className="eyebrow">{collection.artist}</p>
-                  <h2>{collection.title}</h2>
-                </div>
-                <span className="pill">Open workbench</span>
-              </div>
-              <p className="hero-copy">
-                Open the deck to inspect token-level asks, local trait support, market
-                history, and neighborhood comps in one place.
-              </p>
+              <p className="eyebrow">{collection.artist}</p>
+              <h2>{collection.title}</h2>
               <div className="collection-card-stats">
-                <Metric
-                  label="Collection floor"
-                  value={formatValue(
-                    collection.floorEth,
-                    undefined,
-                    collection.ethUsd,
-                    "eth-usd",
-                  )}
-                />
-                <Metric
-                  label="Top collection bid"
-                  value={formatValue(
-                    collection.topBidEth,
-                    undefined,
-                    collection.ethUsd,
-                    "eth-usd",
-                  )}
-                />
-                <Metric label="Snapshot" value={formatDate(collection.snapshotTs)} />
+                <div className="landing-stat">
+                  <small>Floor</small>
+                  <strong>{formatValue(collection.floorEth, undefined, collection.ethUsd, "eth-usd")}</strong>
+                </div>
+                <div className="landing-stat">
+                  <small>Top bid</small>
+                  <strong>{formatValue(collection.topBidEth, undefined, collection.ethUsd, "eth-usd")}</strong>
+                </div>
+                <div className="landing-stat">
+                  <small>Snapshot</small>
+                  <strong>{formatDate(collection.snapshotTs)}</strong>
+                </div>
               </div>
+              <span className="landing-cta">Open workbench &rarr;</span>
             </div>
           </button>
         ))}
