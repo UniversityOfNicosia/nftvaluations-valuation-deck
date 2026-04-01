@@ -190,10 +190,13 @@ export type CollectionData = {
 export type CombinedTraitMetrics = {
   matchedTokenCount: number;
   matchedTokenShare: number;
-  floorAskEth?: number;
-  medianPredictionEth?: number;
-  medianAdjustedFloorEth?: number;
-  medianRarityRank?: number;
+  askFloorEth?: number;
+  combinedMedianEth?: number;
+  floorReferenceEth?: number;
+  latestSaleEth?: number;
+  latestSaleUsd?: number;
+  latestSaleTs?: number;
+  matchedTokenNumbers: number[];
 };
 
 export type NeighborhoodMode = "trait" | "rarity" | "visual" | "curated";

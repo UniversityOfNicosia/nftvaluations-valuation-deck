@@ -9,6 +9,7 @@
   --accent: #b4572d;
   --accent-soft: rgba(180, 87, 45, 0.12);
   --green: #2d6f55;
+  --green-soft: rgba(45, 111, 85, 0.14);
   --shadow: 0 20px 45px rgba(49, 37, 20, 0.14);
   font-family: "Avenir Next", "Segoe UI", sans-serif;
 }
@@ -179,18 +180,19 @@ button {
   background: rgba(255, 255, 255, 0.7);
 }
 
-.token-results,
-.trait-chip-list {
+.token-results {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
 .token-chip,
-.trait-chip,
 .segmented-control button,
 .timeline-row,
-.neighbor-row {
+.neighbor-row,
+.trait-table-row,
+.secondary-button,
+.token-pill {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.62);
@@ -205,10 +207,10 @@ button {
 }
 
 .token-chip.active,
-.trait-chip.selected,
 .segmented-control .selected,
 .timeline-row.active,
-.neighbor-row.active {
+.neighbor-row.active,
+.trait-table-row.selected {
   border-color: rgba(180, 87, 45, 0.35);
   background: rgba(180, 87, 45, 0.14);
 }
@@ -218,7 +220,8 @@ button {
 .timeline-card,
 .trait-panel,
 .inspector-card,
-.combined-trait-card {
+.combined-trait-card,
+.regime-card {
   display: grid;
   gap: 16px;
 }
@@ -288,7 +291,30 @@ button {
   justify-content: flex-end;
 }
 
-.timeline-chart {
+.timeline-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-legend,
+.trait-actions,
+.token-pill-list {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.legend-pill,
+.token-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+}
+
+.timeline-chart,
+.regime-chart {
   width: 100%;
   height: auto;
   border-radius: 18px;
@@ -300,12 +326,22 @@ button {
   stroke-width: 1.5;
 }
 
+.timeline-path {
+  fill: none;
+  stroke: rgba(180, 87, 45, 0.34);
+  stroke-width: 2.5;
+}
+
 .timeline-dot {
   fill: var(--accent);
 }
 
 .timeline-dot.private {
   fill: var(--green);
+}
+
+.timeline-dot.aggregate {
+  fill: rgba(31, 28, 23, 0.76);
 }
 
 .timeline-dot.selected {
@@ -338,27 +374,81 @@ button {
 .neighbor-metrics {
   display: grid;
   justify-items: end;
+  gap: 4px;
 }
 
-.trait-chip {
-  padding: 10px 12px;
+.trait-table {
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.trait-table-head,
+.trait-table-row {
   display: grid;
-  gap: 4px;
+  grid-template-columns: 72px minmax(180px, 1.8fr) repeat(4, minmax(110px, 1fr));
+  gap: 12px;
+  align-items: center;
+}
+
+.trait-table-head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.82rem;
+  background: rgba(78, 69, 55, 0.04);
+}
+
+.trait-table-row {
+  width: 100%;
+  padding: 14px 16px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
   text-align: left;
 }
 
-.trait-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.trait-table-row:first-of-type {
+  border-top: 0;
 }
 
-.trait-support-card,
-.combined-trait-card {
+.trait-check {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(78, 69, 55, 0.24);
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.trait-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.trait-copy small {
+  color: var(--muted);
+}
+
+.secondary-button {
+  padding: 10px 14px;
+}
+
+.combined-trait-card,
+.regime-card {
   padding: 16px;
   border-radius: 20px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.68);
+}
+
+.combined-token-strip {
+  display: grid;
+  gap: 10px;
 }
 
 .inspector-body,
@@ -384,6 +474,29 @@ button {
   padding-top: 0;
 }
 
+.regime-area {
+  fill: rgba(180, 87, 45, 0.12);
+}
+
+.regime-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.empty-state {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px dashed rgba(78, 69, 55, 0.26);
+  background: rgba(255, 255, 255, 0.5);
+  display: grid;
+  gap: 6px;
+}
+
+.empty-state small {
+  color: var(--muted);
+}
+
 @media (max-width: 1100px) {
   .workbench-grid {
     grid-template-columns: 1fr;
@@ -391,6 +504,20 @@ button {
 
   .segmented-control.wide {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .trait-table-head,
+  .trait-table-row {
+    grid-template-columns: 72px minmax(180px, 1.8fr) repeat(2, minmax(110px, 1fr));
+  }
+
+  .trait-table-head span:nth-child(5),
+  .trait-table-head span:nth-child(6),
+  .trait-table-row span:nth-child(5),
+  .trait-table-row span:nth-child(6) {
+    display: none;
   }
 }
 
@@ -412,7 +539,6 @@ button {
   .collection-card-stats,
   .context-grid,
   .token-summary-grid,
-  .trait-grid,
   .market-band {
     grid-template-columns: 1fr;
   }
@@ -422,5 +548,18 @@ button {
   .section-head,
   .token-selector-head {
     flex-direction: column;
+  }
+
+  .trait-table-head {
+    display: none;
+  }
+
+  .trait-table-row {
+    grid-template-columns: 28px 1fr;
+    align-items: start;
+  }
+
+  .trait-table-row > span:nth-child(n + 3) {
+    justify-self: start;
   }
 }

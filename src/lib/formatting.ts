@@ -76,6 +76,28 @@ export function formatDistance(value: number | undefined) {
   return `${formatNumber(value, value >= 10 ? 1 : 2)} pts`;
 }
 
+export function formatRelativeAge(timestamp: number | undefined, referenceTimestamp: number) {
+  if (!timestamp) {
+    return "N/A";
+  }
+
+  const seconds = Math.max(referenceTimestamp - timestamp, 0);
+  const day = 24 * 60 * 60;
+  const month = 30 * day;
+  const year = 365 * day;
+
+  if (seconds < day) {
+    return "< 1d ago";
+  }
+  if (seconds < month) {
+    return `${Math.round(seconds / day)}d ago`;
+  }
+  if (seconds < year) {
+    return `${Math.round(seconds / month)}m ago`;
+  }
+  return `${Math.round(seconds / year)}y ago`;
+}
+
 export function formatTokenNumber(tokenNumber: number) {
   return `#${tokenNumber}`;
 }
