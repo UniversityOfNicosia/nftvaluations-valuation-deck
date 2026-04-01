@@ -20,10 +20,14 @@ export function getDefaultTraitSelection(traits: TokenTrait[]) {
   return traits.slice(0, Math.min(3, traits.length)).map((trait) => trait.property_id);
 }
 
+export function getTokenActivityHistory(collection: CollectionData, tokenId: number) {
+  return (collection.activitiesByTokenId.get(tokenId) ?? []).filter(
+    (activity) => activity.kind !== "mint",
+  );
+}
+
 export function getRecentActivity(collection: CollectionData, tokenId: number) {
-  return (collection.activitiesByTokenId.get(tokenId) ?? [])
-    .filter((activity) => activity.kind !== "mint")
-    .slice(0, 18);
+  return getTokenActivityHistory(collection, tokenId).slice(0, 18);
 }
 
 export function getTopTokenBids(collection: CollectionData, tokenId: number) {
@@ -55,22 +59,36 @@ export function deriveCombinedTraitMetrics(
     return {
       matchedTokenCount: 0,
       matchedTokenShare: 0,
+      matchedTokenNumbers: [],
     };
   }
+
+  const latestSaleToken = [...matchedTokens]
+    .filter((token) => token.last_single_sale_ts !== undefined)
+    .sort((left, right) => (right.last_single_sale_ts ?? 0) - (left.last_single_sale_ts ?? 0))[0];
+  const askFloorEth = Math.min(
+    ...matchedTokens
+      .map((token) => token.current_ask_eth)
+      .filter((value): value is number => value !== undefined),
+  );
+  const floorReferenceEth = Math.min(
+    ...matchedTokens
+      .map((token) => token.adjusted_floor_eth)
+      .filter((value): value is number => value !== undefined),
+  );
 
   return {
     matchedTokenCount: matchedTokens.length,
     matchedTokenShare: matchedTokens.length / collection.tokens.length,
-    floorAskEth: Math.min(
-      ...matchedTokens
-        .map((token) => token.current_ask_eth)
-        .filter((value): value is number => value !== undefined),
-    ),
-    medianPredictionEth: calculateMedian(matchedTokens.map((token) => token.prediction_eth)),
-    medianAdjustedFloorEth: calculateMedian(
-      matchedTokens.map((token) => token.adjusted_floor_eth),
-    ),
-    medianRarityRank: calculateMedian(matchedTokens.map((token) => token.rarity_rank)),
+    askFloorEth: Number.isFinite(askFloorEth) ? askFloorEth : undefined,
+    combinedMedianEth: calculateMedian(matchedTokens.map((token) => token.adjusted_floor_eth)),
+    floorReferenceEth: Number.isFinite(floorReferenceEth) ? floorReferenceEth : undefined,
+    latestSaleEth: latestSaleToken?.last_single_sale_eth,
+    latestSaleUsd: latestSaleToken?.last_single_sale_usd,
+    latestSaleTs: latestSaleToken?.last_single_sale_ts,
+    matchedTokenNumbers: matchedTokens
+      .map((token) => token.tokenNumber)
+      .sort((left, right) => left - right),
   };
 }
 
@@ -128,8 +146,7 @@ export function deriveNeighbors(
       };
     })
     .filter((neighbor) => (mode === "trait" ? neighbor.sharedTraitCount > 0 : true))
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 12);
+    .sort((left, right) => right.score - left.score);
 }
 
 export function getDefaultInspectorActivity(activities: Activity[]) {
