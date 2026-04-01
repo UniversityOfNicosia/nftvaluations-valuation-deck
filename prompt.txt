@@ -1,0 +1,58 @@
+Replace the current Decision Synthesis logic with this stricter version.
+
+Decision Synthesis must be evidence-led, not model-led.
+Do not use model cascades or arbitrary percentage uplifts as the normal rule.
+
+Rules:
+
+Bid-side
+- Prefer meaningful token bid first.
+- If token bid is weak or absent, use the lower end of the closest credible neighbor lane.
+- If no credible neighbor lane exists, fall back to adjusted floor.
+- Collection bid is context / weak floor only, not primary support for premium tokens.
+- Do not use “first available” fallback chains.
+
+Fair value
+- Prefer own last sale if it is relevant and not stale.
+- Otherwise use the center of the closest credible neighbor lane.
+- NFTi / AF / other model outputs may be shown as reference markers, but must not be the primary cascade that determines fair value.
+- If fair value is effectively model-led because market evidence is weak, state that explicitly.
+
+List-side
+- Prefer current ask only if it sits inside a credible upper neighborhood lane.
+- If current ask is materially above the neighborhood lane, reject it as aggressive.
+- Otherwise use the upper end of the closest credible neighbor lane.
+- Only if there is no usable ask and no usable upper-neighbor evidence may you use a fallback uplift from fair.
+- Any fallback uplift must be clearly labeled as fallback, not presented as evidence.
+
+Evidence priority
+1. token last sale
+2. token bid
+3. token ask
+4. closest credible neighbor sales / asks
+5. AF / NFTi / other existing valuation outputs
+6. collection context (floor / top bid / median)
+
+Recency handling
+- <=90d strong
+- 91d–365d medium
+- >365d weak
+Output
+- 3 stacked blocks:
+  - Bid-side
+  - Fair value
+  - List-side
+- Each block:
+  - value
+  - up to 3 short evidence lines
+- Keep lines factual and compact, e.g.:
+  - own sale 35.9 ⏳48d
+  - #128 ask 32.69
+  - collection bid 15.6 (context only)
+  - current ask rejected
+
+Do not:
+- drive fair value from NFTi -> trim -> AF cascades
+- default list-side to fair +15% unless no market evidence exists
+- cap asks at arbitrary percentages unless explicitly marked as temporary fallback
+- present weak collection-level evidence as if it were token-level support

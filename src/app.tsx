@@ -582,6 +582,226 @@ function getInitialTraitSelection(collection: CollectionData, traits: TokenTrait
   return getDefaultTraitSelection(getPrimaryTraitRows(collection, traits));
 }
 
+type SynthesisEvidence = {
+  text: string;
+  age?: string;
+  strength: "strong" | "medium" | "weak";
+};
+
+type SynthesisSide = {
+  value: number | undefined;
+  evidence: SynthesisEvidence[];
+};
+
+function buildDecisionSynthesis(
+  token: TokenWithNumber,
+  marketBand: { topBidEth?: number; fairEth?: number; listEth?: number },
+  neighbors: Array<{ token: TokenWithNumber; sharedTraitCount: number }>,
+  collection: CollectionData,
+  referenceTimestamp: number,
+): { bid: SynthesisSide; fair: SynthesisSide; list: SynthesisSide } {
+  const valid = (v: number | undefined) => v != null && Number.isFinite(v) && v > 0 ? v : undefined;
+  const ageLabel = (ts: number | undefined) => {
+    if (!ts) return undefined;
+    const days = (referenceTimestamp - ts) / (24 * 60 * 60);
+    if (days <= 0) return "now";
+    if (days < 1) return "< 1d";
+    if (days < 30) return `${Math.round(days)}d`;
+    if (days < 365) return `${Math.round(days / 30)}m`;
+    return `${Math.round(days / 365)}y`;
+  };
+  const recencyStrength = (ts: number | undefined): "strong" | "medium" | "weak" => {
+    if (!ts) return "weak";
+    const days = (referenceTimestamp - ts) / (24 * 60 * 60);
+    if (days <= 90) return "strong";
+    if (days <= 365) return "medium";
+    return "weak";
+  };
+
+  const tokenBid = valid(marketBand.topBidEth);
+  const collBid = valid(collection.context.top_bid_eth);
+  const adjFloor = valid(token.adjusted_floor_eth);
+  const nfti = valid(token.prediction_eth);
+  const lastSale = valid(token.last_single_sale_eth);
+  const lastSaleTs = token.last_single_sale_ts;
+  const currentAsk = valid(token.current_ask_eth);
+
+  // Build credible neighbor lanes from top 10 closest neighbors
+  const topNeighbors = neighbors.slice(0, 10);
+  const neighborSales = topNeighbors
+    .filter((n) => valid(n.token.last_single_sale_eth) && n.token.last_single_sale_ts)
+    .sort((a, b) => (b.token.last_single_sale_ts ?? 0) - (a.token.last_single_sale_ts ?? 0));
+  const neighborAsks = topNeighbors
+    .filter((n) => valid(n.token.current_ask_eth))
+    .sort((a, b) => (a.token.current_ask_eth ?? 0) - (b.token.current_ask_eth ?? 0));
+
+  const neighborSaleValues = neighborSales.map((n) => n.token.last_single_sale_eth ?? 0);
+  const laneLow = neighborSaleValues.length > 0 ? Math.min(...neighborSaleValues) : undefined;
+  const laneHigh = neighborSaleValues.length > 0 ? Math.max(...neighborSaleValues) : undefined;
+  const laneCenter = laneLow != null && laneHigh != null ? (laneLow + laneHigh) / 2 : undefined;
+
+  const upperNeighborAsks = neighborAsks.map((n) => n.token.current_ask_eth ?? 0);
+  const upperLane = upperNeighborAsks.length > 0 ? Math.max(...upperNeighborAsks) : undefined;
+
+  // === BID SIDE ===
+  const bidEvidence: SynthesisEvidence[] = [];
+  let bidValue: number | undefined;
+
+  // 1. Meaningful token bid
+  if (tokenBid && adjFloor && tokenBid >= adjFloor * 0.5) {
+    bidValue = tokenBid;
+    bidEvidence.push({ text: `Token bid ${tokenBid.toFixed(2)} Ξ`, strength: "strong" });
+  } else if (tokenBid) {
+    bidEvidence.push({ text: `Token bid ${tokenBid.toFixed(2)} Ξ — weak`, strength: "weak" });
+  }
+
+  // 2. Lower neighbor lane
+  if (laneLow != null && !bidValue) {
+    bidValue = laneLow;
+    bidEvidence.push({ text: `Lower neighbor lane ${laneLow.toFixed(2)} Ξ`, strength: "medium" });
+  } else if (laneLow != null && bidEvidence.length < 3) {
+    bidEvidence.push({ text: `Lower neighbor lane ${laneLow.toFixed(2)} Ξ`, strength: "medium" });
+  }
+
+  // 3. Adjusted floor fallback
+  if (!bidValue && adjFloor) {
+    bidValue = adjFloor;
+    bidEvidence.push({ text: `Adj. floor ${adjFloor.toFixed(2)} Ξ (fallback)`, strength: "medium" });
+  } else if (adjFloor && bidEvidence.length < 3) {
+    bidEvidence.push({ text: `Adj. floor ${adjFloor.toFixed(2)} Ξ`, strength: "medium" });
+  }
+
+  // Collection bid as context only
+  if (collBid && bidEvidence.length < 3) {
+    bidEvidence.push({ text: `Collection bid ${collBid.toFixed(2)} Ξ (context)`, strength: "weak" });
+  }
+
+  // === FAIR VALUE ===
+  const fairEvidence: SynthesisEvidence[] = [];
+  let fairValue: number | undefined;
+  let fairIsModelLed = false;
+
+  // 1. Own last sale if relevant
+  if (lastSale && lastSaleTs && recencyStrength(lastSaleTs) !== "weak") {
+    fairValue = lastSale;
+    fairEvidence.push({
+      text: `Own sale ${lastSale.toFixed(2)} Ξ`,
+      age: ageLabel(lastSaleTs),
+      strength: recencyStrength(lastSaleTs),
+    });
+  } else if (lastSale && lastSaleTs) {
+    // Stale — show as reference, don't drive value
+    fairEvidence.push({
+      text: `Own sale ${lastSale.toFixed(2)} Ξ (stale)`,
+      age: ageLabel(lastSaleTs),
+      strength: "weak",
+    });
+  }
+
+  // 2. Center of neighbor lane
+  if (laneCenter != null && neighborSales.length >= 2) {
+    if (!fairValue) {
+      fairValue = laneCenter;
+    }
+    fairEvidence.push({
+      text: `Neighbor lane ${laneLow!.toFixed(1)}–${laneHigh!.toFixed(1)} Ξ`,
+      strength: "medium",
+    });
+  } else if (neighborSales.length === 1) {
+    const ns = neighborSales[0];
+    if (!fairValue) {
+      fairValue = ns.token.last_single_sale_eth;
+    }
+    fairEvidence.push({
+      text: `${ns.token.display_name} sold ${(ns.token.last_single_sale_eth ?? 0).toFixed(2)} Ξ`,
+      age: ageLabel(ns.token.last_single_sale_ts),
+      strength: recencyStrength(ns.token.last_single_sale_ts),
+    });
+  }
+
+  // 3. Model outputs as reference
+  if (!fairValue) {
+    fairValue = nfti ?? adjFloor;
+    fairIsModelLed = true;
+  }
+  if (nfti && fairEvidence.length < 3) {
+    fairEvidence.push({
+      text: `NFTi ${nfti.toFixed(2)} Ξ${fairIsModelLed ? " (model-led)" : ""}`,
+      strength: fairIsModelLed ? "medium" : "weak",
+    });
+  }
+  if (adjFloor && adjFloor !== nfti && fairEvidence.length < 3) {
+    fairEvidence.push({ text: `Adj. floor ${adjFloor.toFixed(2)} Ξ`, strength: "weak" });
+  }
+
+  // === LIST SIDE ===
+  const listEvidence: SynthesisEvidence[] = [];
+  let listValue: number | undefined;
+
+  // Build upper neighbor lane for validation
+  const upperAskLane = upperNeighborAsks.length > 0
+    ? { low: Math.min(...upperNeighborAsks), high: Math.max(...upperNeighborAsks) }
+    : undefined;
+
+  // 1. Current ask — validate against neighbor lane
+  if (currentAsk && upperAskLane) {
+    if (currentAsk <= upperAskLane.high * 1.15) {
+      // Inside credible lane
+      listValue = currentAsk;
+      listEvidence.push({
+        text: `Current ask ${currentAsk.toFixed(2)} Ξ`,
+        age: ageLabel(token.current_ask_start_ts),
+        strength: "strong",
+      });
+    } else {
+      // Above lane — reject
+      const pctAbove = fairValue ? ((currentAsk - fairValue) / fairValue * 100).toFixed(0) : "?";
+      listEvidence.push({
+        text: `Current ask ${currentAsk.toFixed(2)} Ξ (+${pctAbove}% vs fair) — rejected`,
+        strength: "weak",
+      });
+    }
+  } else if (currentAsk && !upperAskLane) {
+    // No neighbor asks to validate against — accept cautiously
+    listValue = currentAsk;
+    listEvidence.push({
+      text: `Current ask ${currentAsk.toFixed(2)} Ξ (no comps to validate)`,
+      age: ageLabel(token.current_ask_start_ts),
+      strength: "medium",
+    });
+  }
+
+  // 2. Upper neighbor lane
+  if (upperLane != null && !listValue) {
+    listValue = upperLane;
+  }
+  if (neighborAsks.length > 0 && listEvidence.length < 3) {
+    const closest = neighborAsks[0];
+    listEvidence.push({
+      text: `${closest.token.display_name} ask ${(closest.token.current_ask_eth ?? 0).toFixed(2)} Ξ`,
+      strength: "medium",
+    });
+  }
+  if (neighborAsks.length >= 3 && listEvidence.length < 3) {
+    listEvidence.push({
+      text: `Upper comp lane to ${upperLane!.toFixed(2)} Ξ`,
+      strength: "weak",
+    });
+  }
+
+  // 3. Fallback only if nothing else
+  if (!listValue && fairValue) {
+    listValue = fairValue * 1.15;
+    listEvidence.push({ text: `Fallback: fair +15% (no market evidence)`, strength: "weak" });
+  }
+
+  return {
+    bid: { value: bidValue, evidence: bidEvidence.slice(0, 3) },
+    fair: { value: fairValue, evidence: fairEvidence.slice(0, 3) },
+    list: { value: listValue, evidence: listEvidence.slice(0, 3) },
+  };
+}
+
 function getSaleRecencyTone(saleTs: number | undefined, referenceTs: number): string {
   if (!saleTs) return "";
   const days = (referenceTs - saleTs) / (24 * 60 * 60);
@@ -1456,63 +1676,73 @@ function TokenWorkbenchPanels({
           />
         </section>
 
-        <section className="panel inspector-card">
-          <div className="section-head">
-            <div>
-              <p className="eyebrow">Decision synthesis</p>
-            </div>
-          </div>
-          <div className="decision-grid">
-            <DecisionCard
-              notes={[
-                `Token ${formatValue(
-                  marketBand.topBidEth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Collection ${formatValue(
-                  collection.context.top_bid_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-              ]}
-              title="Support"
-              tone="bid"
-              value={formatValue(
-                marketBand.topBidEth ?? collection.context.top_bid_eth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-            <DecisionCard
-              notes={[
-                `NFTi ${formatValue(
-                  selectedToken.prediction_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-                `Floor ${formatValue(
-                  selectedToken.adjusted_floor_eth,
-                  undefined,
-                  collection.metadata.eth_usd,
-                  valueMode,
-                )}`,
-              ]}
-              title="Working value"
-              tone="fair"
-              value={formatValue(
-                marketBand.fairEth,
-                undefined,
-                collection.metadata.eth_usd,
-                valueMode,
-              )}
-            />
-          </div>
-        </section>
+        {(() => {
+          const synthesis = buildDecisionSynthesis(
+            selectedToken,
+            marketBand,
+            visibleNeighbors,
+            collection,
+            referenceTimestamp,
+          );
+          return (
+            <section className="panel synthesis-card">
+              <div className="section-head">
+                <p className="eyebrow">Decision synthesis</p>
+                <span className="pill experimental-tag">Placeholder</span>
+              </div>
+              <div className="synthesis-grid">
+                <div className="synthesis-block bid">
+                  <div className="synthesis-block-head">
+                    <span className="synthesis-block-title">Bid-side</span>
+                    <strong className="synthesis-block-value">
+                      {formatValue(synthesis.bid.value, undefined, collection.metadata.eth_usd, valueMode)}
+                    </strong>
+                  </div>
+                  <div className="synthesis-evidence">
+                    {synthesis.bid.evidence.map((ev, i) => (
+                      <span key={i} className={`synthesis-ev ${ev.strength}`}>
+                        {ev.text}
+                        {ev.age ? <small className="ev-age">{ev.age}</small> : null}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="synthesis-block fair">
+                  <div className="synthesis-block-head">
+                    <span className="synthesis-block-title">Fair value</span>
+                    <strong className="synthesis-block-value">
+                      {formatValue(synthesis.fair.value, undefined, collection.metadata.eth_usd, valueMode)}
+                    </strong>
+                  </div>
+                  <div className="synthesis-evidence">
+                    {synthesis.fair.evidence.map((ev, i) => (
+                      <span key={i} className={`synthesis-ev ${ev.strength}`}>
+                        {ev.text}
+                        {ev.age ? <small className="ev-age">{ev.age}</small> : null}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="synthesis-block list">
+                  <div className="synthesis-block-head">
+                    <span className="synthesis-block-title">List-side</span>
+                    <strong className="synthesis-block-value">
+                      {formatValue(synthesis.list.value, undefined, collection.metadata.eth_usd, valueMode)}
+                    </strong>
+                  </div>
+                  <div className="synthesis-evidence">
+                    {synthesis.list.evidence.map((ev, i) => (
+                      <span key={i} className={`synthesis-ev ${ev.strength}`}>
+                        {ev.text}
+                        {ev.age ? <small className="ev-age">{ev.age}</small> : null}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+          );
+        })()}
 
       </aside>
 
