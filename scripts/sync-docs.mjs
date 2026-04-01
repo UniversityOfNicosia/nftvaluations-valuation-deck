@@ -12,7 +12,9 @@ async function main() {
   await mkdir(docsDir, { recursive: true });
   await cp(distDir, docsDir, { recursive: true });
   const docsIndexPath = resolve(docsDir, "index.html");
-  const normalizedIndex = (await readFile(docsIndexPath, "utf8")).replace(/\r\n?/g, "\n");
+  const normalizedIndex = (await readFile(docsIndexPath, "utf8"))
+    .replace(/\r\n?/g, "\n")
+    .replace(/<div id="root"><\/div>\n\s*\n(\s*<script>)/, '<div id="root"></div>\n$1');
   await writeFile(docsIndexPath, normalizedIndex);
   await writeFile(resolve(docsDir, ".nojekyll"), "");
 }

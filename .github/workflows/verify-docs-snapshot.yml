@@ -2,9 +2,6 @@ name: Verify Docs Snapshot
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 jobs:
   verify:
