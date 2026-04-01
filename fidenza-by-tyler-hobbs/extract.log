@@ -1,0 +1,92 @@
+[2026-04-01 07:03:57 UTC] Starting extraction for collection_id=90 with snapshot_ts=1775027037
+[2026-04-01 07:03:57 UTC] Latest collection daily snapshot timestamp: 1775001600
+[2026-04-01 07:03:57 UTC] Fetching collection snapshot history for 1,764 daily keys
+[2026-04-01 07:03:57 UTC]   collection snapshot progress: 1,764/1,764
+[2026-04-01 07:03:57 UTC] Loaded 999 current token rows
+[2026-04-01 07:03:58 UTC] Loaded 11,839 token-trait rows
+[2026-04-01 07:03:58 UTC] Loaded 21,613 activity rows after bundle exclusion
+[2026-04-01 07:04:05 UTC]   token snapshot progress: 25/999
+[2026-04-01 07:04:11 UTC]   token snapshot progress: 50/999
+[2026-04-01 07:04:18 UTC]   token snapshot progress: 75/999
+[2026-04-01 07:04:24 UTC]   token snapshot progress: 100/999
+[2026-04-01 07:04:31 UTC]   token snapshot progress: 125/999
+[2026-04-01 07:04:37 UTC]   token snapshot progress: 150/999
+[2026-04-01 07:04:43 UTC]   token snapshot progress: 175/999
+[2026-04-01 07:04:50 UTC]   token snapshot progress: 200/999
+[2026-04-01 07:04:57 UTC]   token snapshot progress: 225/999
+[2026-04-01 07:05:03 UTC]   token snapshot progress: 250/999
+[2026-04-01 07:05:10 UTC]   token snapshot progress: 275/999
+[2026-04-01 07:05:16 UTC]   token snapshot progress: 300/999
+[2026-04-01 07:05:23 UTC]   token snapshot progress: 325/999
+[2026-04-01 07:05:29 UTC]   token snapshot progress: 350/999
+[2026-04-01 07:05:36 UTC]   token snapshot progress: 375/999
+[2026-04-01 07:05:43 UTC]   token snapshot progress: 400/999
+[2026-04-01 07:05:49 UTC]   token snapshot progress: 425/999
+[2026-04-01 07:05:56 UTC]   token snapshot progress: 450/999
+[2026-04-01 07:06:02 UTC]   token snapshot progress: 475/999
+[2026-04-01 07:06:09 UTC]   token snapshot progress: 500/999
+[2026-04-01 07:06:16 UTC]   token snapshot progress: 525/999
+[2026-04-01 07:06:23 UTC]   token snapshot progress: 550/999
+[2026-04-01 07:06:29 UTC]   token snapshot progress: 575/999
+[2026-04-01 07:06:35 UTC]   token snapshot progress: 600/999
+[2026-04-01 07:06:42 UTC]   token snapshot progress: 625/999
+[2026-04-01 07:06:48 UTC]   token snapshot progress: 650/999
+[2026-04-01 07:06:55 UTC]   token snapshot progress: 675/999
+[2026-04-01 07:07:01 UTC]   token snapshot progress: 700/999
+[2026-04-01 07:07:08 UTC]   token snapshot progress: 725/999
+[2026-04-01 07:07:15 UTC]   token snapshot progress: 750/999
+[2026-04-01 07:07:21 UTC]   token snapshot progress: 775/999
+[2026-04-01 07:07:27 UTC]   token snapshot progress: 800/999
+[2026-04-01 07:07:34 UTC]   token snapshot progress: 825/999
+[2026-04-01 07:07:40 UTC]   token snapshot progress: 850/999
+[2026-04-01 07:07:47 UTC]   token snapshot progress: 875/999
+[2026-04-01 07:07:53 UTC]   token snapshot progress: 900/999
+[2026-04-01 07:07:59 UTC]   token snapshot progress: 925/999
+[2026-04-01 07:08:06 UTC]   token snapshot progress: 950/999
+[2026-04-01 07:08:13 UTC]   token snapshot progress: 975/999
+[2026-04-01 07:08:19 UTC]   token snapshot progress: 999/999
+[2026-04-01 07:08:21 UTC] Using ETH/USD=2151.620000 for snapshot_ts=1775027037
+[2026-04-01 07:08:21 UTC] OpenSea offers page 1: 200 offers (total 200)
+[2026-04-01 07:08:22 UTC] OpenSea offers page 2: 200 offers (total 400)
+[2026-04-01 07:08:22 UTC] OpenSea offers page 3: 200 offers (total 600)
+[2026-04-01 07:08:23 UTC] OpenSea offers page 4: 200 offers (total 800)
+[2026-04-01 07:08:23 UTC] OpenSea offers page 5: 200 offers (total 1,000)
+[2026-04-01 07:08:24 UTC] OpenSea offers page 6: 200 offers (total 1,200)
+[2026-04-01 07:08:24 UTC] OpenSea offers page 7: 200 offers (total 1,400)
+[2026-04-01 07:08:25 UTC] OpenSea offers page 8: 200 offers (total 1,600)
+[2026-04-01 07:08:25 UTC] OpenSea offers page 9: 200 offers (total 1,800)
+[2026-04-01 07:08:26 UTC] OpenSea offers page 10: 52 offers (total 1,852)
+[2026-04-01 07:08:26 UTC] OpenSea trait bids without property match: 2
+[2026-04-01 07:08:26 UTC] Built 1,852 bid rows
+[2026-04-01 07:08:26 UTC] FAILED: Object of type int64 is not JSON serializable
+[2026-04-01 07:09:23 UTC] Starting extraction for collection_id=90 with snapshot_ts=1775027037
+[2026-04-01 07:09:23 UTC] Fetching collection snapshot history for 1,764 daily keys
+[2026-04-01 07:09:24 UTC]   collection snapshot progress: 1,764/1,764
+[2026-04-01 07:09:24 UTC] Loaded 999 current token rows
+[2026-04-01 07:09:24 UTC] Loaded 11,839 token-trait rows
+[2026-04-01 07:09:24 UTC] Loaded 21,613 activity rows after bundle exclusion
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 50/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 100/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 150/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 200/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 250/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 300/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 350/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 400/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 450/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 500/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 550/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 600/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 650/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 700/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 750/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 800/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 850/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 900/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 950/999
+[2026-04-01 07:09:24 UTC]   token snapshot resume progress: 999/999
+[2026-04-01 07:09:24 UTC] Using ETH/USD=2151.620000 for snapshot_ts=1775027037
+[2026-04-01 07:09:24 UTC] Loaded 1,852 cached OpenSea offers from 10 pages
+[2026-04-01 07:09:24 UTC] OpenSea trait bids without property match: 2
+[2026-04-01 07:09:24 UTC] Built 1,852 bid rows
+[2026-04-01 07:09:25 UTC] Finished extraction into /home/sagemaker-user/fidenza_collection90_extract
