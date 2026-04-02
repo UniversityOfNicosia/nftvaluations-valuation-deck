@@ -1844,7 +1844,7 @@ button.token-artwork-frame {
   padding: 4px 8px;
   border-radius: 999px;
   font-size: 0.7rem;
-  font-size: 0.73rem;
+  white-space: nowrap;
   font-weight: 600;
   line-height: 1;
 }
