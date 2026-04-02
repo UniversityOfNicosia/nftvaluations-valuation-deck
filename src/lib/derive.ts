@@ -84,7 +84,7 @@ export function deriveCombinedTraitMetrics(
   collection: CollectionData,
   propertyIds: number[],
 ): CombinedTraitMetrics | null {
-  if (propertyIds.length < 2) {
+  if (propertyIds.length < 1) {
     return null;
   }
 

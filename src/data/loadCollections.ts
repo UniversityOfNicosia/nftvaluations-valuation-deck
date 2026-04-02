@@ -8,7 +8,6 @@ import type {
   CollectionSummary,
   TokenRecord,
   TraitAnnotation,
-  TraitAnnotationFile,
   TokenTrait,
   TokenWithNumber,
   TraitSupport,

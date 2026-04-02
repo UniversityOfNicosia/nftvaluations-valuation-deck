@@ -106,7 +106,6 @@ type ArtworkConfig = {
   featuredTokenIndex: string;
   featuredTokenNumber: number;
 };
-type SignalTone = "warm" | "cool" | "positive" | "muted" | "rare";
 
 const timelineScopeOptions: Array<{ label: string; value: TimelineScope }> = [
   { label: "Token only", value: "token" },
@@ -391,16 +390,7 @@ function formatTimelineAgeTick(timestamp: number, latestTimestamp: number) {
   return ageInDays === 0 ? "now" : `${ageInDays}d`;
 }
 
-function getTimelineScopeSummary(scope: TimelineScope) {
-  switch (scope) {
-    case "token":
-      return "Selected token rows only, with local sale, ask, and active bid evidence inside the chosen window.";
-    case "neighborhood":
-      return "Selected token plus the current neighborhood set, keeping the view compact and directly comparable.";
-    default:
-      return "Collection-wide activity compressed into median-price buckets, with active collection bids overlaid.";
-  }
-}
+
 
 function describeTimelineAnchor(entry: TimelineEntry, collection: CollectionData) {
   if (isAggregateTimelineEntry(entry)) {
@@ -452,25 +442,6 @@ function formatSignedPercent(value: number | undefined, digits = 1) {
   }).format(normalized)}%`;
 }
 
-function getContextWindowSeconds(window: ContextDeltaWindow) {
-  const day = 24 * 60 * 60;
-  switch (window) {
-    case "1d":
-      return day;
-    case "1w":
-      return 7 * day;
-    case "1m":
-      return 30 * day;
-    case "3m":
-      return 90 * day;
-    case "6m":
-      return 180 * day;
-    case "1y":
-    default:
-      return 365 * day;
-  }
-}
-
 function getDeltaForWindow(
   context: CollectionData["context"],
   prefix: string,
@@ -489,57 +460,6 @@ function getDeltaForWindow(
   return typeof value === "number" ? value : undefined;
 }
 
-function getFloorDeltaForWindow(
-  context: CollectionData["context"],
-  window: ContextDeltaWindow,
-) {
-  return getDeltaForWindow(context, "change_floor_pct", window);
-}
-
-function getSnapshotAtOrBefore(
-  snapshots: CollectionData["snapshots"],
-  timestamp: number,
-) {
-  let candidate = snapshots[0];
-  snapshots.forEach((snapshot) => {
-    if (snapshot.timestamp <= timestamp) {
-      candidate = snapshot;
-    }
-  });
-  return candidate;
-}
-
-function getListedPctFromSnapshot(snapshot: CollectionData["snapshots"][number] | undefined) {
-  if (!snapshot || snapshot.listing_count === undefined || !snapshot.token_count) {
-    return undefined;
-  }
-  return snapshot.listing_count / snapshot.token_count;
-}
-
-function deriveListedDelta(
-  collection: CollectionData,
-  window: ContextDeltaWindow,
-  referenceTimestamp: number,
-) {
-  const currentListedPct =
-    collection.context.listed_pct ??
-    getListedPctFromSnapshot(collection.snapshots[collection.snapshots.length - 1]);
-  if (currentListedPct === undefined) {
-    return undefined;
-  }
-
-  const priorSnapshot = getSnapshotAtOrBefore(
-    collection.snapshots,
-    referenceTimestamp - getContextWindowSeconds(window),
-  );
-  const priorListedPct = getListedPctFromSnapshot(priorSnapshot);
-  if (priorListedPct === undefined || priorListedPct === 0) {
-    return undefined;
-  }
-
-  return (currentListedPct - priorListedPct) / priorListedPct;
-}
-
 function getChangeTone(value: number | undefined) {
   if (value === undefined || value === 0) {
     return "neutral";
@@ -547,8 +467,20 @@ function getChangeTone(value: number | undefined) {
   return value > 0 ? "up" : "down";
 }
 
-function getTraitDriverTier(collection: CollectionData, propertyId: number): TraitDriverTier {
-  return collection.traitAnnotationsByPropertyId.get(propertyId)?.driver_tier ?? "Not a driver";
+function isBinaryTrait(collection: CollectionData, trait: TokenTrait) {
+  const siblings = (collection.tokenTraitsByTokenId.get(trait.token_id) ?? [])
+    .filter((t) => t.category_name === trait.category_name);
+  if (siblings.length !== 1) return false;
+  const name = trait.property_name.toLowerCase();
+  return name === "yes" || name === "no" || name === "true" || name === "false";
+}
+
+function getTraitDisplayName(collection: CollectionData, trait: TokenTrait) {
+  if (isBinaryTrait(collection, trait)) {
+    const isPositive = trait.property_name.toLowerCase() === "yes" || trait.property_name.toLowerCase() === "true";
+    return isPositive ? trait.category_name : `No ${trait.category_name}`;
+  }
+  return trait.property_name;
 }
 
 function getPrimaryTraitRows(collection: CollectionData, traits: TokenTrait[]) {
@@ -909,45 +841,7 @@ function getTokenExternalUrl(slug: string, tokenIndex: string | number) {
   return `https://www.artblocks.io/token/${artwork.chainId}/${artwork.contractAddress}/${tokenIndex}`;
 }
 
-function buildTokenSignals(
-  token: TokenWithNumber,
-  tokenBids: Bid[],
-  referenceTimestamp: number,
-  rarityBucket: ReturnType<typeof deriveRarityBucket>,
-) {
-  const signals: Array<{ label: string; tone: SignalTone }> = [];
-  const recentSaleAge = token.last_single_sale_ts
-    ? referenceTimestamp - token.last_single_sale_ts
-    : undefined;
 
-  if (recentSaleAge !== undefined && recentSaleAge <= 180 * 24 * 60 * 60) {
-    signals.push({
-      label: `Recent sale ${formatRelativeAge(token.last_single_sale_ts, referenceTimestamp)}`,
-      tone: "positive",
-    });
-  }
-  if (token.current_ask_eth !== undefined) {
-    signals.push({ label: "Active ask", tone: "warm" });
-  }
-  if (tokenBids[0]?.price_eth !== undefined) {
-    signals.push({ label: "Token bid live", tone: "cool" });
-  }
-  if (rarityBucket) {
-    signals.push({
-      label: rarityBucket.label,
-      tone: rarityBucket.tone === "elite" ? "rare" : "cool",
-    });
-  }
-  if (
-    token.current_ask_eth !== undefined &&
-    token.prediction_eth !== undefined &&
-    token.current_ask_eth > token.prediction_eth * 1.2
-  ) {
-    signals.push({ label: "Ask above model", tone: "muted" });
-  }
-
-  return signals.slice(0, 5);
-}
 
 function resolveTokenSelection(collection: CollectionData, query: string) {
   const normalized = query.trim().toLowerCase();
@@ -1276,14 +1170,6 @@ function TokenWorkbenchPanels({
         .slice(0, 6),
     [collection.tokenBidsByTokenId, minBidEth, selectedToken.token_id],
   );
-  const collectionBids = useMemo(
-    () =>
-      collection.collectionBids
-        .filter((bid) => bid.status === "ACTIVE" && bid.is_active !== false)
-        .filter((bid) => (bid.price_eth ?? 0) >= minBidEth)
-        .slice(0, 6),
-    [collection.collectionBids, minBidEth],
-  );
   const marketBand = summarizeMarketBand(selectedToken, tokenBids);
   const allTokenActivity = getTokenActivityHistory(collection, selectedToken.token_id);
   const [timelineScope, setTimelineScope] = useState<TimelineScope>("token");
@@ -1398,16 +1284,6 @@ function TokenWorkbenchPanels({
   const inspectedNeighbor =
     visibleNeighbors.find((neighbor) => neighbor.token.token_id === inspectedNeighborId) ??
     visibleNeighbors[0];
-  const tokenSignals = useMemo(
-    () =>
-      buildTokenSignals(
-        selectedToken,
-        tokenBids,
-        referenceTimestamp,
-        selectedRarityBucket,
-      ),
-    [referenceTimestamp, selectedRarityBucket, selectedToken, tokenBids],
-  );
   const selectedTokenUrl = getTokenExternalUrl(
     collection.summary.slug,
     selectedToken.token_index,
@@ -1527,8 +1403,9 @@ function TokenWorkbenchPanels({
                   selectedRarityBucket ? getRarityToneClass(selectedRarityBucket.tone) : "",
                 )}
               >
-                {selectedRarityBucket?.label ?? "Rarity pending"}
-                {selectedToken.rarity_rank != null ? ` #${selectedToken.rarity_rank}` : ""}
+                {selectedToken.rarity_rank != null
+                  ? `Rarity: #${selectedToken.rarity_rank} (${selectedRarityBucket?.label ?? "—"})`
+                  : "Rarity pending"}
               </span>
             </div>
             <div className="valuation-hero-card nfti">
@@ -1751,7 +1628,6 @@ function TokenWorkbenchPanels({
               entries={timelineData.entries}
               ethUsd={collection.metadata.eth_usd}
               inspectedEntry={inspectedTimelineEntry}
-              legend={timelineData.legend}
               neighborhoodMode={neighborhoodMode}
               neighborhoodSize={neighborhoodSize}
               neighborhoodShownCount={visibleNeighbors.length}
@@ -1778,11 +1654,8 @@ function TokenWorkbenchPanels({
               onInspect={(neighbor) => setInspectedNeighborId(neighbor.token.token_id)}
               onModeChange={onNeighborhoodModeChange}
               onSizeChange={setNeighborhoodSize}
-              selectedTraitCount={activeTraits.length}
               selectedToken={selectedToken}
-              shownCount={visibleNeighbors.length}
               size={neighborhoodSize}
-              totalCount={allNeighbors.length}
               valueMode={valueMode}
             />
           )}
@@ -1837,9 +1710,9 @@ function TokenWorkbenchPanels({
                   >
                     <span className={cx("trait-check", enabled && "checked")}>{enabled ? "\u25A0" : ""}</span>
                     <span className="trait-copy">
-                      <strong>{trait.property_name}</strong>
+                      <strong>{getTraitDisplayName(collection, trait)}</strong>
                       <small>
-                        {trait.category_name} &middot; {trait.property_token_count} tokens
+                        {isBinaryTrait(collection, trait) ? "" : `${trait.category_name} \u00b7 `}{trait.property_token_count} tokens
                       </small>
                     </span>
                     <span className="trait-class-cell">
@@ -1893,7 +1766,7 @@ function TokenWorkbenchPanels({
                 );
               },
             )}
-            {combinedTraits && activeTraits.length >= 2 ? (
+            {combinedTraits && activeTraits.length >= 1 ? (
               <div className="trait-table-footer">
                 <div className="trait-table-footer-label">
                   <strong>Intersection</strong>
@@ -1943,7 +1816,7 @@ function TokenWorkbenchPanels({
               </span>
             ) : null}
           </div>
-          {combinedTraits && activeTraits.length >= 2 ? (
+          {combinedTraits && activeTraits.length >= 1 ? (
             <div className="trait-intersection">
               <div className="trait-intersection-header">
                 <p className="eyebrow">Trait intersection</p>
@@ -1999,6 +1872,14 @@ function TokenWorkbenchPanels({
                           </td>
                           <td>
                             {formatValue(token.last_single_sale_eth, token.last_single_sale_usd, collection.metadata.eth_usd, valueMode)}
+                            {token.last_single_sale_ts ? (
+                              <small
+                                className={cx("age-pill", getSaleRecencyTone(token.last_single_sale_ts, Date.now() / 1000))}
+                                title={formatDateTime(token.last_single_sale_ts)}
+                              >
+                                {formatRelativeAge(token.last_single_sale_ts, Date.now() / 1000).replace(" ago", "")}
+                              </small>
+                            ) : null}
                           </td>
                         </tr>
                       );
@@ -2011,7 +1892,7 @@ function TokenWorkbenchPanels({
             </div>
           ) : (
             <p className="footnote">
-              Select at least two trait rows above to see their intersection and matching tokens.
+              Select a trait row above to see matching tokens.
             </p>
           )}
         </section>
@@ -2041,16 +1922,6 @@ function CollectionArtwork({
       src={src}
     />
   );
-}
-
-function SignalPill({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: SignalTone;
-}) {
-  return <span className={cx("signal-pill", tone)}>{label}</span>;
 }
 
 function TokenArtwork({
@@ -2113,33 +1984,6 @@ function TokenArtwork({
   );
 }
 
-function TokenThumbnail({
-  slug,
-  token,
-}: {
-  slug: string;
-  token: TokenWithNumber;
-}) {
-  const [failed, setFailed] = useState(false);
-  const src = getTokenImageUrl(slug, token.token_index);
-
-  if (!src || failed) {
-    return <TokenFallback compact rarityBucket={null} token={token} />;
-  }
-
-  return (
-    <div className="token-thumb-frame">
-      <img
-        alt={token.display_name}
-        className="token-thumb-image"
-        loading="lazy"
-        onError={() => setFailed(true)}
-        src={src}
-      />
-    </div>
-  );
-}
-
 function ContextDeltaToggle({
   onChange,
   value,
@@ -2185,123 +2029,6 @@ function BidFloorControl({
       />
       <small>Ξ</small>
     </label>
-  );
-}
-
-function TokenEvidenceRail({
-  collectionBidEth,
-  ethUsd,
-  modelEth,
-  selectedToken,
-  tokenBidEth,
-  valueMode,
-}: {
-  collectionBidEth?: number;
-  ethUsd: number;
-  modelEth?: number;
-  selectedToken: TokenWithNumber;
-  tokenBidEth?: number;
-  valueMode: ValueMode;
-}) {
-  const markers = [
-    {
-      id: "support",
-      label: tokenBidEth !== undefined ? "Token bid" : "Collection bid",
-      tone: "support",
-      value: tokenBidEth ?? collectionBidEth,
-    },
-    {
-      id: "floor",
-      label: "Adj. floor",
-      tone: "floor",
-      value: selectedToken.adjusted_floor_eth,
-    },
-    {
-      id: "model",
-      label: "Model",
-      tone: "model",
-      value: modelEth,
-    },
-    {
-      id: "sale",
-      label: "Last sale",
-      tone: "sale",
-      value: selectedToken.last_single_sale_eth,
-    },
-    {
-      id: "ask",
-      label: "Ask",
-      tone: "ask",
-      value: selectedToken.current_ask_eth,
-    },
-  ].filter(
-    (marker): marker is { id: string; label: string; tone: string; value: number } =>
-      typeof marker.value === "number" && Number.isFinite(marker.value),
-  );
-
-  if (markers.length === 0) {
-    return null;
-  }
-
-  const minValue = Math.min(...markers.map((marker) => marker.value));
-  const maxValue = Math.max(...markers.map((marker) => marker.value));
-  const spread = Math.max(maxValue - minValue, 0.001);
-
-  return (
-    <div className="token-evidence-rail">
-      <div className="token-evidence-track" />
-      {markers.map((marker, index) => {
-        const left = ((marker.value - minValue) / spread) * 100;
-        return (
-          <div
-            className={`token-evidence-marker ${marker.tone} ${index % 2 === 0 ? "high" : "low"}`}
-            key={marker.id}
-            style={{ left: `${left}%` }}
-          >
-            <span className="token-evidence-dot" />
-            <div className="token-evidence-label">
-              <strong>{marker.label}</strong>
-              <small>{formatValue(marker.value, undefined, ethUsd, valueMode)}</small>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function DecisionCard({
-  notes,
-  title,
-  tone,
-  value,
-}: {
-  notes: string[];
-  title: string;
-  tone: "bid" | "fair" | "list";
-  value: string;
-}) {
-  return (
-    <div className={cx("decision-card", tone)}>
-      <p className="eyebrow">{title}</p>
-      <div className="decision-card-value">{value}</div>
-      <div className="decision-card-notes">
-        {notes.map((note) => (
-          <span className="decision-note" key={note}>
-            {note}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function HeaderKpi({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="header-kpi">
-      <strong>{label}</strong>
-      <span>{value}</span>
-    </span>
   );
 }
 
@@ -2391,16 +2118,6 @@ function DataTable({ columns, rows }: { columns: DataTableColumn[]; rows: DataTa
         ))}
       </tbody>
     </table>
-  );
-}
-
-function Metric({ label, note, value }: { label: string; note?: string; value: string }) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {note ? <small>{note}</small> : null}
-    </div>
   );
 }
 
@@ -2496,7 +2213,6 @@ function TimelinePanel({
   entries,
   ethUsd,
   inspectedEntry,
-  legend,
   neighborRelevance,
   neighborhoodMode,
   neighborhoodSize,
@@ -2517,7 +2233,6 @@ function TimelinePanel({
   entries: TimelineEntry[];
   ethUsd: number;
   inspectedEntry?: TimelineEntry;
-  legend: TimelineLegend;
   neighborRelevance: Map<number, number>;
   neighborhoodMode: NeighborhoodMode;
   neighborhoodSize: NeighborhoodSizeOption;
@@ -2537,6 +2252,7 @@ function TimelinePanel({
   const [hoveredEntryKey, setHoveredEntryKey] = useState<string | undefined>();
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | undefined>();
   const [valuationOverlay, setValuationOverlay] = useState<"nfti" | "af" | "off">("nfti");
+  const [excludeOutliers, setExcludeOutliers] = useState(true);
   const [keyEventsOpen, setKeyEventsOpen] = useState(true);
   const chartFrameRef = useRef<HTMLDivElement>(null);
   const [visibleSeries, setVisibleSeries] = useState<Record<TimelineSeriesKey, boolean>>({
@@ -2559,18 +2275,39 @@ function TimelinePanel({
     collection.context.median_sale_eth_30d,
     collection.context.top_bid_eth,
   ].filter((value): value is number => typeof value === "number" && value > 0);
-  const chartValues = chartEntries
+  const allChartValues = chartEntries
     .map((entry) => getTimelineEntryValue(entry))
     .filter((value): value is number => Number.isFinite(value) && value > 0);
   const timestamps = chartEntries.map((entry) => entry.timestamp);
-  const minTimestamp = timestamps.length > 0 ? Math.min(...timestamps) : 0;
-  const maxTimestamp = timestamps.length > 0 ? Math.max(...timestamps) : 1;
+
+  // For single data points, extend the time range using snapshot data
+  const snapshotTimestamps = scope === "token" && tokenSnapshots.length > 0
+    ? tokenSnapshots.map((s) => s.timestamp)
+    : [];
+  const allTimestamps = [...timestamps, ...snapshotTimestamps];
+  const minTimestamp = allTimestamps.length > 0 ? Math.min(...allTimestamps) : 0;
+  const maxTimestamp = allTimestamps.length > 0 ? Math.max(...allTimestamps) : 1;
+
   const visibleSnapshots = scope === "token" && valuationOverlay !== "off"
     ? tokenSnapshots.filter((s) => s.timestamp >= minTimestamp && s.timestamp <= maxTimestamp)
     : [];
   const snapshotValues = visibleSnapshots.map((s) =>
     valuationOverlay === "af" ? s.adjusted_floor_eth : s.nfti_eth,
   ).filter((v) => Number.isFinite(v) && v > 0);
+
+  // Outlier exclusion using IQR
+  const chartValues = (() => {
+    if (!excludeOutliers || allChartValues.length < 4) return allChartValues;
+    const sorted = [...allChartValues].sort((a, b) => a - b);
+    const q1 = sorted[Math.floor(sorted.length * 0.25)];
+    const q3 = sorted[Math.floor(sorted.length * 0.75)];
+    const iqr = q3 - q1;
+    const lowerBound = q1 - 2.5 * iqr;
+    const upperBound = q3 + 2.5 * iqr;
+    const filtered = allChartValues.filter((v) => v >= lowerBound && v <= upperBound);
+    return filtered.length > 0 ? filtered : allChartValues;
+  })();
+
   const rawMin = Math.min(...(chartValues.length > 0 ? chartValues : [0]), ...referenceValues, ...(snapshotValues.length > 0 ? snapshotValues : []));
   const rawMax = Math.max(...(chartValues.length > 0 ? chartValues : [1]), ...referenceValues, ...(snapshotValues.length > 0 ? snapshotValues : []), 1);
   const pricePadding = Math.max((rawMax - rawMin) * 0.16, rawMax * 0.06, 0.75);
@@ -2609,13 +2346,6 @@ function TimelinePanel({
   })();
   const yTicks = buildLinearTicks(minPrice, maxPrice, 5);
   const xTicks = buildLinearTicks(minTimestamp, maxTimestamp, 5);
-  const floorReference = collection.context.floor_eth;
-  const medianReference = collection.context.median_sale_eth_30d;
-  const topBidReference = collection.context.top_bid_eth;
-  const floorY =
-    typeof floorReference === "number" ? getY(floorReference) : undefined;
-  const medianY = typeof medianReference === "number" ? getY(medianReference) : undefined;
-  const topBidY = typeof topBidReference === "number" ? getY(topBidReference) : undefined;
   const chartNote =
     scope === "neighborhood"
       ? `${neighborhoodShownCount} neighborhood tokens shown in this view.`
@@ -2798,6 +2528,15 @@ function TimelinePanel({
             </div>
           </div>
         ) : null}
+        <div className="chart-control-group">
+          <button
+            className={cx("legend-pill", excludeOutliers && "selected")}
+            onClick={() => setExcludeOutliers((c) => !c)}
+            type="button"
+          >
+            Exclude outliers
+          </button>
+        </div>
       </div>
       {scope === "neighborhood" ? (
         <div className="definition-box">
@@ -3125,7 +2864,6 @@ function ValuationRangeBar({
   // Dummy bid/ask spread: ±10% of fair value
   const modelBidEth = fairEth * 0.9;
   const modelAskEth = fairEth * 1.1;
-  const rangeWidth = ((modelAskEth - modelBidEth) / fairEth) * 100;
   const confidence = 68;
 
   // The bar spans from 0% to 100% with model bid at 20%, fair at 50%, model ask at 80%
@@ -3310,48 +3048,7 @@ function ChartTooltip({
   );
 }
 
-function ChartInspectorCard({
-  collection,
-  entry,
-  ethUsd,
-  referenceTimestamp,
-  valueMode,
-}: {
-  collection: CollectionData;
-  entry: TimelineEntry;
-  ethUsd: number;
-  referenceTimestamp: number;
-  valueMode: ValueMode;
-}) {
-  const anchor = describeTimelineAnchor(entry, collection);
-  const token = isAggregateTimelineEntry(entry)
-    ? undefined
-    : isTimelineBidEntry(entry)
-      ? collection.tokensById.get(entry.tokenId ?? -1)
-      : collection.tokensById.get(entry.token_id);
-  const value = isAggregateTimelineEntry(entry)
-    ? formatValue(entry.medianPriceEth, undefined, ethUsd, valueMode)
-    : isTimelineBidEntry(entry)
-      ? formatValue(entry.priceEth, entry.priceUsd, ethUsd, valueMode)
-      : formatValue(entry.price_eth, entry.price_usd, ethUsd, valueMode);
 
-  return (
-    <div className="chart-inspector-card">
-      {token ? <TokenThumbnail slug={collection.summary.slug} token={token} /> : null}
-      <div className="chart-inspector-copy">
-        <div className="chart-inspector-topline">
-          <span className={`timeline-anchor-type ${anchor.semantic}`}>{anchor.label}</span>
-          <strong>{value}</strong>
-        </div>
-        <div className="chart-inspector-title">{anchor.detail}</div>
-        <div className="chart-inspector-meta">
-          <span>{formatCompactDate(entry.timestamp)}</span>
-          <span>{formatRelativeAge(entry.timestamp, referenceTimestamp)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function NeighborTooltip({
   collectionSlug,
@@ -3423,11 +3120,8 @@ function NeighborhoodPanel({
   onInspect,
   onModeChange,
   onSizeChange,
-  selectedTraitCount,
   selectedToken,
-  shownCount,
   size,
-  totalCount,
   valueMode,
 }: {
   collectionSlug: string;
@@ -3438,11 +3132,8 @@ function NeighborhoodPanel({
   onInspect: (neighbor: NeighborRecord) => void;
   onModeChange: (mode: NeighborhoodMode) => void;
   onSizeChange: (size: NeighborhoodSizeOption) => void;
-  selectedTraitCount: number;
   selectedToken: TokenWithNumber;
-  shownCount: number;
   size: NeighborhoodSizeOption;
-  totalCount: number;
   valueMode: ValueMode;
 }) {
   const modes: Array<{ label: string; value: NeighborhoodMode; disabled?: boolean }> = [
@@ -3464,7 +3155,6 @@ function NeighborhoodPanel({
     [mode, displayedNeighbors, selectedToken, valuationModel],
   );
   const selectedPlotPoint = plotPoints[0];
-  const selectedRarityBucket = deriveRarityBucket(selectedToken.rarityPercentile);
   const hoveredNeighbor = hoveredNeighborId
     ? displayedNeighbors.find((n) => n.token.token_id === hoveredNeighborId)
     : undefined;
@@ -3832,43 +3522,3 @@ function NeighborhoodPanel({
   );
 }
 
-function BidList({
-  bids,
-  ethUsd,
-  title,
-  valueMode,
-}: {
-  bids: Array<{ bid_id: string; bidder_address?: string; end_ts?: number; price_eth?: number; price_usd?: number }>;
-  ethUsd: number;
-  title: string;
-  valueMode: ValueMode;
-}) {
-  const maxBidEth = Math.max(...bids.map((bid) => bid.price_eth ?? 0), 0.0001);
-
-  return (
-    <div className="bid-list">
-      <p className="eyebrow">{title}</p>
-      {bids.length === 0 ? (
-        <p className="footnote">No active bids in the local snapshot.</p>
-      ) : (
-        bids.map((bid) => (
-          <div
-            key={bid.bid_id}
-            className="bid-row"
-            style={
-              {
-                "--bid-strength": `${Math.max(0.12, (bid.price_eth ?? 0) / maxBidEth)}`,
-              } as CSSProperties
-            }
-          >
-            <strong>{formatValue(bid.price_eth, bid.price_usd, ethUsd, valueMode)}</strong>
-            <small>
-              {bid.bidder_address ? `${bid.bidder_address.slice(0, 6)}...` : "Unknown bidder"} /
-              expires {formatDate(bid.end_ts)}
-            </small>
-          </div>
-        ))
-      )}
-    </div>
-  );
-}
