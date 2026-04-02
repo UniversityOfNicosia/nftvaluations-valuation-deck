@@ -2280,10 +2280,9 @@ function TimelinePanel({
     .filter((value): value is number => Number.isFinite(value) && value > 0);
   const timestamps = chartEntries.map((entry) => entry.timestamp);
 
-  // For single data points, extend the time range using snapshot data
-  const snapshotTimestamps = scope === "token" && tokenSnapshots.length > 0
-    ? tokenSnapshots.map((s) => s.timestamp)
-    : [];
+  // For 0-1 data points, extend the time range using snapshot data so the chart isn't flat
+  const needsSnapshotRange = scope === "token" && timestamps.length <= 1 && tokenSnapshots.length > 0;
+  const snapshotTimestamps = needsSnapshotRange ? tokenSnapshots.map((s) => s.timestamp) : [];
   const allTimestamps = [...timestamps, ...snapshotTimestamps];
   const minTimestamp = allTimestamps.length > 0 ? Math.min(...allTimestamps) : 0;
   const maxTimestamp = allTimestamps.length > 0 ? Math.max(...allTimestamps) : 1;
